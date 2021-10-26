@@ -146,3 +146,8 @@ module EffectfulProperties {
   header "EffectfulProperties.h"
   export *
 }
+
+module incomplete_types {
+  header "incomplete_types.h"
+  export *
+}
