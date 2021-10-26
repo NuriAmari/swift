@@ -4114,8 +4114,12 @@ namespace {
         name = DeclName(Impl.SwiftContext, name.getBaseName(), bodyParams);
       }
 
-      if (!bodyParams)
+      if (!bodyParams) {
+        Impl.ifTargetMatchesReportErrorAndConsumeNotes(
+            decl, Diagnostic(diag::invoked_func_not_imported, decl->getName()),
+            decl->getSourceRange().getBegin());
         return nullptr;
+      }
 
       if (name && name.getArgumentNames().size() != bodyParams->size()) {
         // We synthesized additional parameters so rebuild the DeclName.
@@ -4277,8 +4281,12 @@ namespace {
       auto importedType =
           Impl.importType(decl->getType(), ImportTypeKind::RecordField,
                           isInSystemModule(dc), Bridgeability::None);
-      if (!importedType)
+      if (!importedType) {
+        Impl.ifTargetMatchesReportErrorAndConsumeNotes(
+            decl, Diagnostic(diag::record_field_not_imported, decl->getName()),
+            decl->getSourceRange().getBegin());
         return nullptr;
+      }
 
       auto type = importedType.getType();
 
@@ -4594,6 +4602,15 @@ namespace {
       auto dc = Impl.importDeclContextOf(decl, decl->getDeclContext());
       if (!dc)
         return nullptr;
+
+      // Do not produce diagnostics for inactive versions (nullify target),
+      // and restore target to original value after returning.
+      SwiftLookupTable::SingleEntry currentDiagnosticTarget =
+          Impl.getDiagnosticTarget();
+      if (!isActiveSwiftVersion())
+        Impl.diagnosticTarget = nullptr;
+
+      SWIFT_DEFER { Impl.diagnosticTarget = currentDiagnosticTarget; };
 
       // While importing the DeclContext, we might have imported the decl
       // itself.
@@ -4927,6 +4944,17 @@ namespace {
             dc, decl, decl->parameters(), decl->isVariadic(),
             isInSystemModule(dc), &bodyParams, importedName,
             asyncConvention, errorConvention, kind);
+
+        if (!importedType) {
+          std::string declName;
+          llvm::raw_string_ostream declNameStream(declName);
+          decl->printName(declNameStream);
+          Impl.ifTargetMatchesReportErrorAndConsumeNotes(
+              decl,
+              Diagnostic(diag::record_method_not_imported,
+                         declNameStream.str()),
+              decl->getSourceRange().getBegin());
+        }
       }
       if (!importedType)
         return nullptr;
@@ -5520,6 +5548,10 @@ namespace {
           result->getAttrs().add(
               new (Impl.SwiftContext) ForbidSerializingReferenceAttr(true));
           return result;
+        } else {
+          Impl.addPendingErrorNote(
+              Diagnostic(diag::forward_declaration_label, decl->getName()),
+              decl->getSourceRange().getBegin());
         }
 
         forwardDeclaration = true;
@@ -9162,10 +9194,8 @@ void ClangImporter::Implementation::finishNormalConformance(
 }
 
 Decl *ClangImporter::Implementation::importDeclAndCacheImpl(
-    const clang::NamedDecl *ClangDecl,
-    ImportNameVersion version,
-    bool SuperfluousTypedefsAreTransparent,
-    bool UseCanonicalDecl) {
+    const clang::NamedDecl *ClangDecl, ImportNameVersion version,
+    bool SuperfluousTypedefsAreTransparent, bool UseCanonicalDecl) {
   if (!ClangDecl)
     return nullptr;
 
@@ -9867,6 +9897,8 @@ ClangImporter::Implementation::loadAllMembers(Decl *D, uint64_t extra) {
   FrontendStatsTracer tracer(D->getASTContext().Stats,
                              "load-all-members", D);
   assert(D);
+
+  llvm::SaveAndRestore<bool> sar(eagerImportActive, true);
 
   // If a Clang decl has no owning module, then it needs to be added to the
   // bridging header lookup table. This has most likely already been done, but

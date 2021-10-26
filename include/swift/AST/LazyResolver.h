@@ -73,6 +73,12 @@ class alignas(void*) LazyMemberLoader {
 public:
   virtual ~LazyMemberLoader() = default;
 
+  /// Checks if diagnostics have been displayed for all
+  /// members of \p IDC that have DeclName matching \p N.
+  virtual bool
+  diagnosticsProducedForNamedMembers(const IterableDeclContext *IDC,
+                                     DeclBaseName N, uint64_t contextData) = 0;
+
   /// Populates a given decl \p D with all of its members.
   ///
   /// The implementation should add the members to D.

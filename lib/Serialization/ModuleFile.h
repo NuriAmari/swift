@@ -690,6 +690,11 @@ public:
   /// Has no effect in NDEBUG builds.
   void verify() const;
 
+  virtual bool
+  diagnosticsProducedForNamedMembers(const IterableDeclContext *IDC,
+                                     DeclBaseName N,
+                                     uint64_t contextData) override;
+
   virtual void loadAllMembers(Decl *D,
                               uint64_t contextData) override;
 

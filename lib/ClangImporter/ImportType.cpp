@@ -151,14 +151,18 @@ namespace {
   struct ImportResult {
     Type AbstractType;
     ImportHint Hint;
+    bool IncompleteType; // true when the type has only been forward declared in
+                         // the used context.
 
     /*implicit*/ ImportResult(Type type = Type(),
-                              ImportHint hint = ImportHint::None)
-      : AbstractType(type), Hint(hint) {}
+                              ImportHint hint = ImportHint::None,
+                              bool incompleteType = false)
+        : AbstractType(type), Hint(hint), IncompleteType(incompleteType) {}
 
     /*implicit*/ ImportResult(TypeBase *type,
-                              ImportHint hint = ImportHint::None)
-      : AbstractType(type), Hint(hint) {}
+                              ImportHint hint = ImportHint::None,
+                              bool incompleteType = false)
+        : AbstractType(type), Hint(hint), IncompleteType(incompleteType) {}
 
     explicit operator bool() const { return (bool) AbstractType; }
   };
@@ -395,6 +399,14 @@ namespace {
     }
 
     ImportResult VisitComplexType(const clang::ComplexType *type) {
+      if (Impl.SwiftContext.LangOpts
+              .EnableExperimentalClangImporterDiagnostics &&
+          Impl.getDiagnosticTarget()) {
+        Impl.pendingErrorNotes.push_back(
+            {Diagnostic(diag::unsupported_builtin_type,
+                        type->getTypeClassName()),
+             Impl.getDiagnosticTarget()});
+      }
       // FIXME: Implement once Complex is in the library.
       return Type();
     }
@@ -989,7 +1001,8 @@ namespace {
         auto imported = castIgnoringCompatibilityAlias<ClassDecl>(
             Impl.importDecl(objcClass, Impl.CurrentVersion));
         if (!imported)
-          return nullptr;
+          return {nullptr, ImportHint::None,
+                  objcClass->getDefinition() == nullptr};
 
         // If the objc type has any generic args, convert them and bind them to
         // the imported class type.
@@ -1608,6 +1621,25 @@ ImportedType ClangImporter::Implementation::importType(
       *this, allowNSUIntegerAsInt, bridging,
       completionHandlerType, completionHandlerErrorParamIndex);
   auto importResult = converter.Visit(type);
+  if (!importResult && importResult.IncompleteType &&
+      SwiftContext.LangOpts.EnableExperimentalClangImporterDiagnostics &&
+      getDiagnosticTarget()) {
+
+    StringRef forwardDeclaredTypeName = type->getTypeClassName();
+    if (const clang::Type *underlyingType = type.getTypePtrOrNull()) {
+      if (auto pointerType = dyn_cast_or_null<clang::ObjCObjectPointerType>(underlyingType)) {
+        const clang::ObjCInterfaceDecl *interfaceDecl =
+            pointerType->getInterfaceDecl();
+        if (interfaceDecl) {
+          forwardDeclaredTypeName = interfaceDecl->getName();
+        }
+      }
+    }
+
+    pendingErrorNotes.push_back(
+        {Diagnostic(diag::incomplete_type, forwardDeclaredTypeName),
+         getDiagnosticTarget()});
+  }
 
   // Now fix up the type based on how we're concretely using it.
   auto adjustedType = adjustTypeForConcreteImport(
@@ -1839,8 +1871,13 @@ ImportedType ClangImporter::Implementation::importFunctionParamsAndReturnType(
              clangDecl->isOverloadedOperator()) {
     importedType =
         importFunctionReturnType(dc, clangDecl, allowNSUIntegerAsInt);
-    if (!importedType)
+    if (!importedType) {
+      applySourceLocationToNotesWithoutLocation(
+          clangDecl->getSourceRange().getBegin());
+      addPendingErrorNote(Diagnostic(diag::return_type_not_imported),
+                          clangDecl->getSourceRange().getBegin());
       return {Type(), false};
+    }
   }
 
   Type swiftResultTy = importedType.getType();
@@ -1938,8 +1975,14 @@ ParameterList *ClangImporter::Implementation::importFunctionParameterList(
       }
       auto importedType = importType(paramTy, importKind, allowNSUIntegerAsInt,
                                      Bridgeability::Full, OptionalityOfParam);
-      if (!importedType)
+      if (!importedType) {
+        applySourceLocationToNotesWithoutLocation(
+            param->getSourceRange().getBegin());
+        addPendingErrorNote(
+            Diagnostic(diag::parameter_type_not_imported, param->getName()),
+            param->getSourceRange().getBegin());
         return nullptr;
+      }
 
       isParamTypeImplicitlyUnwrapped = importedType.isImplicitlyUnwrapped();
       swiftParamTy = importedType.getType();
@@ -2389,8 +2432,13 @@ ImportedType ClangImporter::Implementation::importMethodParamsAndReturnType(
     }
   }
 
-  if (!swiftResultTy)
+  if (!swiftResultTy) {
+    applySourceLocationToNotesWithoutLocation(
+        clangDecl->getSourceRange().getBegin());
+    addPendingErrorNote(Diagnostic(diag::return_type_not_imported),
+                        clangDecl->getSourceRange().getBegin());
     return {Type(), false};
+  }
 
   swiftResultTy = mapGenericArgs(origDC, dc, swiftResultTy);
 
@@ -2497,8 +2545,14 @@ ImportedType ClangImporter::Implementation::importMethodParamsAndReturnType(
       paramIsIUO = importedParamType.isImplicitlyUnwrapped();
       swiftParamTy = importedParamType.getType();
     }
-    if (!swiftParamTy)
+    if (!swiftParamTy) {
+      applySourceLocationToNotesWithoutLocation(
+          param->getSourceRange().getBegin());
+      addPendingErrorNote(
+          Diagnostic(diag::parameter_type_not_imported, param->getName()),
+          param->getSourceRange().getBegin());
       return {Type(), false};
+    }
 
     swiftParamTy = mapGenericArgs(origDC, dc, swiftParamTy);
 

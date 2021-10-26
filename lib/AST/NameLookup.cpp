@@ -1414,6 +1414,7 @@ TinyPtrVector<ValueDecl *>
 DirectLookupRequest::evaluate(Evaluator &evaluator,
                               DirectLookupDescriptor desc) const {
   const auto &name = desc.Name;
+  DeclBaseName baseName(name.getBaseName());
   const auto flags = desc.Options;
   auto *decl = desc.DC;
 
@@ -1440,7 +1441,36 @@ DirectLookupRequest::evaluate(Evaluator &evaluator,
   decl->addLoadedExtensions();
 
   auto &Table = *decl->LookupTable;
-  if (!useNamedLazyMemberLoading) {
+
+  bool lazilyTriggeredDiagnosticsOutstanding = false;
+  if (ctx.isLazyContext(decl)) {
+    auto ci = ctx.getOrCreateLazyIterableContextData(decl,
+                                                     /*lazyLoader=*/nullptr);
+    // If this lookup is already cached in the table or all members have already
+    // been loaded, and there are diagnostics that were suppressed during the
+    // previous loads, lazily load once more to produce these diagnostics. This
+    // occurs because diagnostics are suppressed during eager loading of
+    // members.
+    lazilyTriggeredDiagnosticsOutstanding =
+        ctx.LangOpts.EnableExperimentalClangImporterDiagnostics &&
+        ctx.LangOpts.NamedLazyMemberLoading &&
+        (!useNamedLazyMemberLoading || Table.isLazilyComplete(baseName)) &&
+        !ci->loader->diagnosticsProducedForNamedMembers(decl, baseName,
+                                                        ci->memberData);
+  }
+
+  if (lazilyTriggeredDiagnosticsOutstanding) {
+    // We are uninterested in the result of the import, just the diagnostics.
+    if (isa_and_nonnull<clang::RecordDecl>(decl->getClangDecl())) {
+      auto allFound = evaluateOrDefault(
+          ctx.evaluator,
+          ClangRecordMemberLookup({cast<StructDecl>(decl), name}), {});
+    } else if (isa<clang::ObjCContainerDecl>(decl->getClangDecl())) {
+      auto ci =
+          ctx.getOrCreateLazyIterableContextData(decl, /*lazyLoader=*/nullptr);
+      auto res = ci->loader->loadNamedMembers(decl, baseName, ci->memberData);
+    }
+  } else if (!useNamedLazyMemberLoading) {
     // Make sure we have the complete list of members (in this nominal and in
     // all extensions).
     (void)decl->getMembers();
@@ -1450,7 +1480,6 @@ DirectLookupRequest::evaluate(Evaluator &evaluator,
 
     Table.updateLookupTable(decl);
   } else if (!Table.isLazilyComplete(name.getBaseName())) {
-    DeclBaseName baseName(name.getBaseName());
 
     if (isa_and_nonnull<clang::NamespaceDecl>(decl->getClangDecl())) {
       auto allFound = evaluateOrDefault(

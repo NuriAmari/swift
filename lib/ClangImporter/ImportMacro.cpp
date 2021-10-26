@@ -25,6 +25,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/APSIntType.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/DiagnosticsClangImporter.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/Stmt.h"
 #include "swift/AST/Types.h"
@@ -47,6 +48,36 @@ parseNumericLiteral(ClangImporter::Implementation &impl,
 // FIXME: Duplicated from ImportDecl.cpp.
 static bool isInSystemModule(DeclContext *D) {
   return cast<ClangModuleUnit>(D->getModuleScopeContext())->isSystemModule();
+}
+
+static bool isMacroDiagnosticTarget(ClangImporter::Implementation &impl,
+                                    ClangNode &macroNode) {
+  const clang::ModuleMacro *moduleMacro = macroNode.getAsModuleMacro();
+  if (moduleMacro) {
+    return impl.isDiagnosticTarget(moduleMacro);
+  }
+  return impl.isDiagnosticTarget(macroNode.getAsMacroInfo());
+}
+
+static void emitMacroDiagnostic(ClangImporter::Implementation &impl,
+                                Diagnostic &&diag,
+                                const clang::SourceLocation &loc,
+                                ClangNode macroNode) {
+  if (impl.SwiftContext.LangOpts.EnableExperimentalClangImporterDiagnostics &&
+      isMacroDiagnosticTarget(impl, macroNode)) {
+    impl.diagnose(impl.convertSourceLocation(loc), diag);
+  }
+}
+
+static Optional<StringRef> getTokenSpelling(ClangImporter::Implementation &impl,
+                                            const clang::Token &tok) {
+  bool tokenInvalid = false;
+  llvm::SmallString<32> spellingBuffer;
+  StringRef tokenSpelling = impl.getClangPreprocessor().getSpelling(
+      tok, spellingBuffer, &tokenInvalid);
+  if (tokenInvalid)
+    return None;
+  return tokenSpelling;
 }
 
 static ValueDecl *
@@ -79,13 +110,10 @@ static ValueDecl *importNumericLiteral(ClangImporter::Implementation &Impl,
     // FIXME: remove this when the following radar is implemented:
     // <rdar://problem/16445608> Swift should set up a DiagnosticConsumer for
     // Clang
-    llvm::SmallString<32> SpellingBuffer;
-    bool Invalid = false;
-    StringRef TokSpelling =
-        Impl.getClangPreprocessor().getSpelling(tok, SpellingBuffer, &Invalid);
-    if (Invalid)
+    Optional<StringRef> TokSpelling = getTokenSpelling(Impl, tok);
+    if (!TokSpelling)
       return nullptr;
-    if (TokSpelling.contains('_'))
+    if (TokSpelling->contains('_'))
       return nullptr;
   }
 
@@ -198,17 +226,41 @@ static ValueDecl *importLiteral(ClangImporter::Implementation &Impl,
                                 ClangNode ClangN,
                                 clang::QualType castType) {
   switch (tok.getKind()) {
-  case clang::tok::numeric_constant:
-    return importNumericLiteral(Impl, DC, MI, name, /*signTok*/nullptr, tok,
-                                ClangN, castType);
-
+  case clang::tok::numeric_constant: {
+    ValueDecl *importedNumericLiteral = importNumericLiteral(
+        Impl, DC, MI, name, /*signTok*/ nullptr, tok, ClangN, castType);
+    if (!importedNumericLiteral) {
+      emitMacroDiagnostic(Impl,
+                          Diagnostic(diag::macro_not_imported, name.str()),
+                          MI->getDefinitionLoc(), ClangN);
+      emitMacroDiagnostic(
+          Impl, Diagnostic(diag::macro_not_imported_invalid_numeric_literal),
+          tok.getLocation(), ClangN);
+    }
+    return importedNumericLiteral;
+  }
   case clang::tok::string_literal:
-  case clang::tok::utf8_string_literal:
-    return importStringLiteral(Impl, DC, MI, name, tok,
-                               MappedStringLiteralKind::CString, ClangN);
+  case clang::tok::utf8_string_literal: {
+    ValueDecl *importedStringLiteral = importStringLiteral(
+        Impl, DC, MI, name, tok, MappedStringLiteralKind::CString, ClangN);
+    if (!importedStringLiteral) {
+      emitMacroDiagnostic(Impl,
+                          Diagnostic(diag::macro_not_imported, name.str()),
+                          MI->getDefinitionLoc(), ClangN);
+      emitMacroDiagnostic(
+          Impl, Diagnostic(diag::macro_not_imported_invalid_string_literal),
+          tok.getLocation(), ClangN);
+    }
+    return importedStringLiteral;
+  }
 
   // TODO: char literals.
   default:
+    emitMacroDiagnostic(Impl, Diagnostic(diag::macro_not_imported, name.str()),
+                        MI->getDefinitionLoc(), ClangN);
+    emitMacroDiagnostic(
+        Impl, Diagnostic(diag::macro_not_imported_unsupported_literal),
+        tok.getLocation(), ClangN);
     return nullptr;
   }
 }
@@ -333,6 +385,13 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
          "Add the name of the macro to visitedMacros before calling this "
          "function.");
 
+  if (macro->isFunctionLike()) {
+    emitMacroDiagnostic(
+        impl, Diagnostic(diag::macro_not_imported_function_like, name.str()),
+        macro->getDefinitionLoc(), ClangN);
+    return nullptr;
+  }
+
   auto numTokens = macro->getNumTokens();
   auto tokenI = macro->tokens_begin(), tokenE = macro->tokens_end();
 
@@ -354,6 +413,7 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       tokenI[2].is(clang::tok::r_paren)) {
     if (!castType.isNull()) {
       // this is a nested cast
+      // TODO(SR-15429): Diagnose nested cast
       return nullptr;
     }
 
@@ -376,9 +436,11 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       if (parsedType && diagPool.empty()) {
         castType = parsedType.get();
       } else {
+        // TODO(SR-15429): Add diagnosis
         return nullptr;
       }
       if (!castType->isBuiltinType() && !castTypeIsId) {
+        // TODO(SR-15429): Add diagnosis
         return nullptr;
       }
     } else {
@@ -387,6 +449,7 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       if (builtinType) {
         castType = builtinType.getValue();
       } else {
+        // TODO(SR-15429): Add diagnosis
         return nullptr;
       }
     }
@@ -443,6 +506,9 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
 
       // FIXME: If the identifier refers to a declaration, alias it?
     }
+
+    // TODO(SR-15429): Seems rare to have a single token that is neither a
+    // literal nor an identifier, but add diagnosis
     return nullptr;
   }
   case 2: {
@@ -455,14 +521,36 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
     clang::Token const &first = tokenI[0];
     clang::Token const &second = tokenI[1];
 
-    if (isSignToken(first) && second.is(clang::tok::numeric_constant))
-      return importNumericLiteral(impl, DC, macro, name, &first, second, ClangN,
-                                  castType);
+    if (isSignToken(first) && second.is(clang::tok::numeric_constant)) {
+      ValueDecl *importedNumericLiteral = importNumericLiteral(
+          impl, DC, macro, name, &first, second, ClangN, castType);
+      if (!importedNumericLiteral) {
+        emitMacroDiagnostic(impl,
+                            Diagnostic(diag::macro_not_imported, name.str()),
+                            macro->getDefinitionLoc(), ClangN);
+        emitMacroDiagnostic(
+            impl, Diagnostic(diag::macro_not_imported_invalid_numeric_literal),
+            second.getLocation(), ClangN);
+      }
+      return importedNumericLiteral;
+    }
 
     // We also allow @"string".
-    if (first.is(clang::tok::at) && isStringToken(second))
-      return importStringLiteral(impl, DC, macro, name, second,
-                                 MappedStringLiteralKind::NSString, ClangN);
+    if (first.is(clang::tok::at) && isStringToken(second)) {
+      ValueDecl *importedStringLiteral =
+          importStringLiteral(impl, DC, macro, name, second,
+                              MappedStringLiteralKind::NSString, ClangN);
+      if (!importedStringLiteral) {
+        emitMacroDiagnostic(impl,
+                            Diagnostic(diag::macro_not_imported, name.str()),
+                            macro->getDefinitionLoc(), ClangN);
+        emitMacroDiagnostic(
+            impl, Diagnostic(diag::macro_not_imported_invalid_string_literal),
+            second.getLocation(), ClangN);
+      }
+      return importedStringLiteral;
+    }
+
     break;
   }
   case 3: {
@@ -478,6 +566,11 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       firstValue     = firstInt->first;
       firstSwiftType = firstInt->second;
     } else {
+      emitMacroDiagnostic(
+          impl,
+          Diagnostic(diag::macro_not_imported_unsupported_structure,
+                     name.str()),
+          macro->getDefinitionLoc(), ClangN);
       return nullptr;
     }
 
@@ -488,6 +581,11 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       secondValue     = secondInt->first;
       secondSwiftType = secondInt->second;
     } else {
+      emitMacroDiagnostic(
+          impl,
+          Diagnostic(diag::macro_not_imported_unsupported_structure,
+                     name.str()),
+          macro->getDefinitionLoc(), ClangN);
       return nullptr;
     }
 
@@ -601,6 +699,21 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
 
     // Unhandled operators.
     } else {
+      emitMacroDiagnostic(impl,
+                          Diagnostic(diag::macro_not_imported, name.str()),
+                          macro->getDefinitionLoc(), ClangN);
+      if (Optional<StringRef> operatorSpelling =
+              getTokenSpelling(impl, tokenI[1])) {
+        emitMacroDiagnostic(
+            impl,
+            Diagnostic(diag::macro_not_imported_unsupported_named_operator,
+                       *operatorSpelling),
+            tokenI[1].getLocation(), ClangN);
+      } else {
+        emitMacroDiagnostic(
+            impl, Diagnostic(diag::macro_not_imported_unsupported_operator),
+            tokenI[1].getLocation(), ClangN);
+      }
       return nullptr;
     }
 
@@ -641,6 +754,10 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
     break;
   }
 
+  emitMacroDiagnostic(
+      impl,
+      Diagnostic(diag::macro_not_imported_unsupported_structure, name.str()),
+      macro->getDefinitionLoc(), ClangN);
   return nullptr;
 }
 
@@ -658,9 +775,18 @@ ValueDecl *ClangImporter::Implementation::importMacro(Identifier name,
     // Push in a placeholder to break circularity.
     ImportedMacros[name].push_back({macro, nullptr});
   } else {
+    // If diagnostics for a directly referenced macro that could not be imported
+    // have not been reported, import the macro once more, ignoring the cache.
+    bool diagnosticsForReferencedMacroProduced =
+        !isMacroDiagnosticTarget(*this, macroNode);
+
     // Check whether this macro has already been imported.
     for (const auto &entry : known->second) {
-      if (entry.first == macro) return entry.second;
+      // We wish to access the cached results if the previous import was
+      // successful, it failed but we already produced diagnostics.
+      if (entry.first == macro &&
+          (entry.second || diagnosticsForReferencedMacroProduced))
+        return entry.second;
     }
 
     // Otherwise, check whether this macro is identical to a macro that has
@@ -669,13 +795,15 @@ ValueDecl *ClangImporter::Implementation::importMacro(Identifier name,
     for (const auto &entry : known->second) {
       // If the macro is equal to an existing macro, map down to the same
       // declaration.
-      if (macro->isIdenticalTo(*entry.first, clangPP, true)) {
+      // If it is identical to an existing macro which couldn't be imported, and
+      // no diagnostics were suppressed when it was last imported, import again.
+      if (macro->isIdenticalTo(*entry.first, clangPP, true) &&
+          (entry.second || diagnosticsForReferencedMacroProduced)) {
         ValueDecl *result = entry.second;
         known->second.push_back({macro, result});
         return result;
       }
     }
-
     // If not, push in a placeholder to break circularity.
     known->second.push_back({macro, nullptr});
   }

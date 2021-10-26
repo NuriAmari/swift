@@ -40,6 +40,7 @@ namespace clang {
   class EnumDecl;
   class MacroInfo;
   class Module;
+  class ModuleMacro;
   class NamedDecl;
   class Sema;
   class TargetInfo;

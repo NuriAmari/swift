@@ -72,6 +72,7 @@
 #include "llvm/Support/YAMLTraits.h"
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 using namespace swift;
 using namespace importer;
@@ -2277,6 +2278,109 @@ ClangModuleUnit *ClangImporter::Implementation::getClangModuleForDecl(
   return getWrapperForModule(M);
 }
 
+// TODO: Consolidate with importSourceLoc below
+SourceLoc ClangImporter::Implementation::convertSourceLocation(
+    const clang::SourceLocation &loc) {
+  return getBufferImporterForDiagnostics().resolveSourceLocation(
+      getClangASTContext().getSourceManager(), loc);
+}
+
+SwiftLookupTable::SingleEntry
+ClangImporter::Implementation::getDiagnosticTarget() {
+  return diagnosticTarget;
+}
+
+template <typename T>
+T ClangImporter::Implementation::withDiagnosticTargetIfNotAlreadyReported(
+    const SwiftLookupTable::SingleEntry &target, std::function<T()> fn) {
+  bool alreadyReported = reportedDiagnosticTargets.count(target);
+  if (!alreadyReported && !getEagerImportActive()) {
+    reportedDiagnosticTargets.insert(target);
+    return withDiagnosticTarget(target, fn);
+  }
+
+  return fn();
+}
+
+template <typename T>
+T ClangImporter::Implementation::withDiagnosticTarget(
+    const SwiftLookupTable::SingleEntry &target, std::function<T()> fn) {
+  assert(target);
+  // In some situations, the ClangImporter is invoked in a reentrant manner,
+  // resulting in a diagnosticTarget already being set. In such a case, we
+  // keep the outer diagnostic target.
+  llvm::SaveAndRestore<SwiftLookupTable::SingleEntry> sar{diagnosticTarget};
+  if (!diagnosticTarget) {
+    diagnosticTarget = target;
+  }
+  return fn();
+}
+
+bool ClangImporter::Implementation::isDiagnosticTarget(
+    const SwiftLookupTable::SingleEntry &targetCandidate) const {
+  return diagnosticTarget == targetCandidate;
+}
+bool ClangImporter::Implementation::isDiagnosticTarget(
+    const clang::NamedDecl *targetCandidate) const {
+  return diagnosticTarget.dyn_cast<clang::NamedDecl *>() == targetCandidate;
+}
+bool ClangImporter::Implementation::isDiagnosticTarget(
+    const clang::ModuleMacro *targetCandidate) const {
+  return diagnosticTarget.dyn_cast<clang::ModuleMacro *>() == targetCandidate;
+}
+bool ClangImporter::Implementation::isDiagnosticTarget(
+    const clang::MacroInfo *targetCandidate) const {
+  return diagnosticTarget.dyn_cast<clang::MacroInfo *>() == targetCandidate;
+}
+
+bool ClangImporter::Implementation::getEagerImportActive() {
+  return eagerImportActive;
+}
+
+void ClangImporter::Implementation::ifTargetMatchesReportErrorAndConsumeNotes(
+    const clang::NamedDecl *target, Diagnostic &&error,
+    const clang::SourceLocation &loc) {
+  if (!(SwiftContext.LangOpts.EnableExperimentalClangImporterDiagnostics &&
+        isDiagnosticTarget(target)))
+    return;
+
+  const SourceLoc convertedLoc = convertSourceLocation(loc);
+  diagnose(convertedLoc, error);
+  while (!pendingErrorNotes.empty()) {
+    auto pendingErrorNote = pendingErrorNotes.back();
+    if (!pendingErrorNote.diag.getLoc()) {
+      pendingErrorNote.diag.setLoc(convertedLoc);
+    }
+    if (isDiagnosticTarget(pendingErrorNote.target)) {
+      diagnose(pendingErrorNote.diag.getLoc(), pendingErrorNote.diag);
+    }
+    pendingErrorNotes.pop_back();
+  }
+}
+
+void ClangImporter::Implementation::addPendingErrorNote(Diagnostic &&note) {
+  addPendingErrorNote(std::move(note), clang::SourceLocation());
+}
+
+void ClangImporter::Implementation::addPendingErrorNote(
+    Diagnostic &&note, const clang::SourceLocation &loc) {
+  if (!(SwiftContext.LangOpts.EnableExperimentalClangImporterDiagnostics &&
+        getDiagnosticTarget()))
+    return;
+  note.setLoc(convertSourceLocation(loc));
+  pendingErrorNotes.push_back({note, getDiagnosticTarget()});
+}
+
+void ClangImporter::Implementation::applySourceLocationToNotesWithoutLocation(
+    const clang::SourceLocation &loc) {
+  const SourceLoc convertedLoc = convertSourceLocation(loc);
+  for (auto &pendingErrorNote : pendingErrorNotes) {
+    if (!pendingErrorNote.diag.getLoc()) {
+      pendingErrorNote.diag.setLoc(convertedLoc);
+    }
+  }
+}
+
 #pragma mark Source locations
 clang::SourceLocation
 ClangImporter::Implementation::exportSourceLoc(SourceLoc loc) {
@@ -3881,9 +3985,13 @@ void ClangImporter::Implementation::lookupValue(
     // If it's a Clang declaration, try to import it.
     if (auto clangDecl = entry.dyn_cast<clang::NamedDecl *>()) {
       bool isNamespace = isa<clang::NamespaceDecl>(clangDecl);
-      Decl *realDecl =
-          importDeclReal(clangDecl->getMostRecentDecl(), CurrentVersion,
-                         /*useCanonicalDecl*/ !isNamespace);
+      Decl *realDecl = withDiagnosticTargetIfNotAlreadyReported(
+          clangDecl->getMostRecentDecl(),
+          std::function<Decl *()>([&]() -> Decl * {
+            return importDeclReal(clangDecl->getMostRecentDecl(),
+                                  CurrentVersion,
+                                  /*useCanonicalDecl*/ !isNamespace);
+          }));
 
       if (!realDecl)
         continue;
@@ -3891,11 +3999,17 @@ void ClangImporter::Implementation::lookupValue(
       if (!decl) continue;
     } else if (!name.isSpecial()) {
       // Try to import a macro.
-      if (auto modMacro = entry.dyn_cast<clang::ModuleMacro *>())
-        decl = importMacro(name.getBaseIdentifier(), modMacro);
-      else if (auto clangMacro = entry.dyn_cast<clang::MacroInfo *>())
-        decl = importMacro(name.getBaseIdentifier(), clangMacro);
-      else
+      if (auto modMacro = entry.dyn_cast<clang::ModuleMacro *>()) {
+        decl = withDiagnosticTargetIfNotAlreadyReported(
+            modMacro, std::function<ValueDecl *()>([&]() {
+              return importMacro(name.getBaseIdentifier(), modMacro);
+            }));
+      } else if (auto clangMacro = entry.dyn_cast<clang::MacroInfo *>()) {
+        decl = withDiagnosticTargetIfNotAlreadyReported(
+            clangMacro, std::function<ValueDecl *()>([&]() {
+              return importMacro(name.getBaseIdentifier(), clangMacro);
+            }));
+      } else
         llvm_unreachable("new kind of lookup table entry");
       if (!decl) continue;
     } else {
@@ -3975,6 +4089,9 @@ void ClangImporter::Implementation::lookupValue(
 void ClangImporter::Implementation::lookupVisibleDecls(
        SwiftLookupTable &table,
        VisibleDeclConsumer &consumer) {
+
+  llvm::SaveAndRestore<bool> sar(eagerImportActive, true);
+
   // Retrieve and sort all of the base names in this particular table.
   auto baseNames = table.allBaseNames();
   llvm::array_pod_sort(baseNames.begin(), baseNames.end());
@@ -4160,6 +4277,28 @@ TinyPtrVector<ValueDecl *> ClangRecordMemberLookup::evaluate(
   return result;
 }
 
+bool ClangImporter::Implementation::diagnosticsProducedForNamedMembers(
+    const IterableDeclContext *IDC, DeclBaseName N, uint64_t contextData) {
+  auto *D = IDC->getDecl();
+  auto *DC = D->getInnermostDeclContext();
+  auto *CD = D->getClangDecl();
+  auto CMO = getClangSubmoduleForDecl(CD);
+  auto *nominal = DC->getSelfNominalTypeDecl();
+  auto effectiveClangContext = getEffectiveClangContext(nominal);
+  auto table = findLookupTable(*CMO);
+
+  for (auto entry :
+       table->lookup(SerializedSwiftName(N), effectiveClangContext)) {
+    if (auto member = entry.dyn_cast<clang::NamedDecl *>()) {
+      if (!reportedDiagnosticTargets.count(member)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 TinyPtrVector<ValueDecl *>
 ClangImporter::Implementation::loadNamedMembers(
     const IterableDeclContext *IDC, DeclBaseName N, uint64_t contextData) {
@@ -4221,7 +4360,10 @@ ClangImporter::Implementation::loadNamedMembers(
     if (member->getDeclContext() != CDC) continue;
 
     SmallVector<Decl*, 4> tmp;
-    insertMembersAndAlternates(member, tmp);
+    withDiagnosticTargetIfNotAlreadyReported(
+        member, std::function<void()>(
+                    [&]() { insertMembersAndAlternates(member, tmp); }));
+
     for (auto *TD : tmp) {
       if (auto *V = dyn_cast<ValueDecl>(TD)) {
         // Skip ValueDecls if they import under different names.
@@ -4518,5 +4660,8 @@ ClangImporter::getEffectiveClangContext(const NominalTypeDecl *nominal) {
 }
 
 Decl *ClangImporter::importDeclDirectly(const clang::NamedDecl *decl) {
-  return Impl.importDecl(decl, Impl.CurrentVersion);
+  return Impl.withDiagnosticTargetIfNotAlreadyReported(
+      const_cast<clang::NamedDecl *>(decl), std::function<Decl *()>([&]() {
+        return Impl.importDecl(decl, Impl.CurrentVersion);
+      }));
 }
