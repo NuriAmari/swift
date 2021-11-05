@@ -383,35 +383,37 @@ namespace {
       llvm_unreachable("Invalid BuiltinType.");
     }
 
-    ImportResult VisitExtIntType(const clang::ExtIntType *) {
+    ImportResult VisitExtIntType(const clang::ExtIntType *type) {
+      Impl.addPendingErrorNote(
+          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
       // ExtInt is not supported in Swift.
       return Type();
     }
 
-    ImportResult VisitPipeType(const clang::PipeType *) {
+    ImportResult VisitPipeType(const clang::PipeType *type) {
+      Impl.addPendingErrorNote(
+          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
       // OpenCL types are not supported in Swift.
       return Type();
     }
 
     ImportResult VisitMatrixType(const clang::MatrixType *ty) {
+      Impl.addPendingErrorNote(
+          Diagnostic(diag::unsupported_builtin_type, ty->getTypeClassName()));
       // Matrix types are not supported in Swift.
       return Type();
     }
 
     ImportResult VisitComplexType(const clang::ComplexType *type) {
-      if (Impl.SwiftContext.LangOpts
-              .EnableExperimentalClangImporterDiagnostics &&
-          Impl.getDiagnosticTarget()) {
-        Impl.pendingErrorNotes.push_back(
-            {Diagnostic(diag::unsupported_builtin_type,
-                        type->getTypeClassName()),
-             Impl.getDiagnosticTarget()});
-      }
+      Impl.addPendingErrorNote(
+          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
       // FIXME: Implement once Complex is in the library.
       return Type();
     }
 
     ImportResult VisitAtomicType(const clang::AtomicType *type) {
+      Impl.addPendingErrorNote(
+          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
       // FIXME: handle pointers and fields of atomic type
       return Type();
     }
@@ -1636,9 +1638,8 @@ ImportedType ClangImporter::Implementation::importType(
       }
     }
 
-    pendingErrorNotes.push_back(
-        {Diagnostic(diag::incomplete_type, forwardDeclaredTypeName),
-         getDiagnosticTarget()});
+    addPendingErrorNote(
+        Diagnostic(diag::incomplete_type, forwardDeclaredTypeName));
   }
 
   // Now fix up the type based on how we're concretely using it.

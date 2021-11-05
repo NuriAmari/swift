@@ -4608,9 +4608,9 @@ namespace {
       SwiftLookupTable::SingleEntry currentDiagnosticTarget =
           Impl.getDiagnosticTarget();
       if (!isActiveSwiftVersion())
-        Impl.diagnosticTarget = nullptr;
+        Impl.DiagnosticTarget = nullptr;
 
-      SWIFT_DEFER { Impl.diagnosticTarget = currentDiagnosticTarget; };
+      SWIFT_DEFER { Impl.DiagnosticTarget = currentDiagnosticTarget; };
 
       // While importing the DeclContext, we might have imported the decl
       // itself.
@@ -9898,7 +9898,7 @@ ClangImporter::Implementation::loadAllMembers(Decl *D, uint64_t extra) {
                              "load-all-members", D);
   assert(D);
 
-  llvm::SaveAndRestore<bool> sar(eagerImportActive, true);
+  llvm::SaveAndRestore<bool> sar(EagerImportActive, true);
 
   // If a Clang decl has no owning module, then it needs to be added to the
   // bridging header lookup table. This has most likely already been done, but

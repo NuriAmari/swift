@@ -2463,7 +2463,7 @@ ASTContext::getInheritedConformance(Type type, ProtocolConformance *inherited) {
 }
 
 bool ASTContext::isLazyContext(const DeclContext *dc) {
-  return getImpl().LazyContexts[dc];
+  return getImpl().LazyContexts.count(dc) != 0;
 }
 
 LazyContextData *ASTContext::getOrCreateLazyContextData(

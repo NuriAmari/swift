@@ -363,14 +363,14 @@ public:
   /// Swift AST context.
   ASTContext &SwiftContext;
 
-  SwiftLookupTable::SingleEntry diagnosticTarget = nullptr;
-  std::vector<PendingErrorNote> pendingErrorNotes;
+  SwiftLookupTable::SingleEntry DiagnosticTarget = nullptr;
+  std::vector<PendingErrorNote> PendingErrorNotes;
   std::unordered_set<SwiftLookupTable::SingleEntry,
                      SwiftLookupTableSingleEntryHasher>
-      reportedDiagnosticTargets;
+      ReportedDiagnosticTargets;
   /// Used to indicate when the importer is being used to eagerly import
   /// a collection of ClangDecls.
-  bool eagerImportActive = false;
+  bool EagerImportActive = false;
 
   const bool ImportForwardDeclarations;
   const bool DisableSwiftBridgeAttr;

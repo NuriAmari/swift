@@ -1479,7 +1479,7 @@ DirectLookupRequest::evaluate(Evaluator &evaluator,
       (void)E->getMembers();
 
     Table.updateLookupTable(decl);
-  } else if (!Table.isLazilyComplete(name.getBaseName())) {
+  } else if (!Table.isLazilyComplete(baseName)) {
 
     if (isa_and_nonnull<clang::NamespaceDecl>(decl->getClangDecl())) {
       auto allFound = evaluateOrDefault(
@@ -1523,7 +1523,7 @@ DirectLookupRequest::evaluate(Evaluator &evaluator,
       populateLookupTableEntryFromExtensions(ctx, Table, baseName, decl);
     }
 
-    Table.markLazilyComplete(name.getBaseName());
+    Table.markLazilyComplete(baseName);
   }
 
   // Look for a declaration with this name.
