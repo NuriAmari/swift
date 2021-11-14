@@ -4,7 +4,7 @@ import ctypes
 
 let s: PartialImport
 s.c = 5
-// CHECK:      ctypes.h:{{[0-9]+}}:3: error: field 'c' not imported
+// CHECK:      ctypes.h:{{[0-9]+}}:3: warning: field 'c' not imported
 // CHECK-NEXT:   int _Complex c;
 // CHECK-NEXT:   ^
 // CHECK-NEXT: ctypes.h:{{[0-9]+}}:3: note: built-in type 'Complex' not supported
@@ -23,7 +23,7 @@ var newPartialImport = PartialImport()
 newPartialImport.a = 5
 newPartialImport.b = 5
 newPartialImport.d = 5
-// CHECK:      ctypes.h:{{[0-9]+}}:3: error: field 'd' not imported
+// CHECK:      ctypes.h:{{[0-9]+}}:3: warning: field 'd' not imported
 // CHECK-NEXT:   int _Complex d;
 // CHECK-NEXT:   ^
 // CHECK-NEXT: ctypes.h:{{[0-9]+}}:3: note: built-in type 'Complex' not supported

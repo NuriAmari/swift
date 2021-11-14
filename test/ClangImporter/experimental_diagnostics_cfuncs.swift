@@ -3,7 +3,7 @@
 import cfuncs
 
 unsupported_parameter_type(1,2)
-// CHECK:      cfuncs.h:{{[0-9]+}}:1: error: function 'unsupported_parameter_type' not imported
+// CHECK:      cfuncs.h:{{[0-9]+}}:1: warning: function 'unsupported_parameter_type' not imported
 // CHECK-NEXT:      int unsupported_parameter_type(int param1, _Complex int param2);
 // CHECK-NEXT: {{^}}^
 // CHECK-NEXT: cfuncs.h:{{[0-9]+}}:44: note: parameter 'param2' not imported
@@ -17,7 +17,7 @@ unsupported_parameter_type(1,2)
 // CHECK-NEXT: ^~~~~~~~~~~~~~~~~~~~~~~~~~
 
 unsupported_return_type()
-// CHECK: cfuncs.h:{{[0-9]+}}:1: error: function 'unsupported_return_type' not imported
+// CHECK: cfuncs.h:{{[0-9]+}}:1: warning: function 'unsupported_return_type' not imported
 // CHECK-NEXT:      _Complex int unsupported_return_type();
 // CHECK-NEXT: {{^}}^
 // CHECK-NEXT: cfuncs.h:{{[0-9]+}}:1: note: return type not imported

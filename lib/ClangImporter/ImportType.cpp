@@ -151,18 +151,14 @@ namespace {
   struct ImportResult {
     Type AbstractType;
     ImportHint Hint;
-    bool IncompleteType; // true when the type has only been forward declared in
-                         // the used context.
 
     /*implicit*/ ImportResult(Type type = Type(),
-                              ImportHint hint = ImportHint::None,
-                              bool incompleteType = false)
-        : AbstractType(type), Hint(hint), IncompleteType(incompleteType) {}
+                              ImportHint hint = ImportHint::None)
+      : AbstractType(type), Hint(hint) {}
 
     /*implicit*/ ImportResult(TypeBase *type,
-                              ImportHint hint = ImportHint::None,
-                              bool incompleteType = false)
-        : AbstractType(type), Hint(hint), IncompleteType(incompleteType) {}
+                              ImportHint hint = ImportHint::None)
+      : AbstractType(type), Hint(hint) {}
 
     explicit operator bool() const { return (bool) AbstractType; }
   };
@@ -1002,9 +998,12 @@ namespace {
       if (auto objcClass = type->getInterfaceDecl()) {
         auto imported = castIgnoringCompatibilityAlias<ClassDecl>(
             Impl.importDecl(objcClass, Impl.CurrentVersion));
+        if (!imported && !objcClass->hasDefinition())
+          Impl.addPendingErrorNote(
+              Diagnostic(diag::incomplete_interface, objcClass->getName()));
+
         if (!imported)
-          return {nullptr, ImportHint::None,
-                  objcClass->getDefinition() == nullptr};
+          return nullptr;
 
         // If the objc type has any generic args, convert them and bind them to
         // the imported class type.
@@ -1186,6 +1185,8 @@ namespace {
              cp != cpEnd; ++cp) {
           auto proto = castIgnoringCompatibilityAlias<ProtocolDecl>(
             Impl.importDecl(*cp, Impl.CurrentVersion));
+            Impl.addPendingErrorNote(
+                Diagnostic(diag::incomplete_protocol, (*cp)->getName()));
           if (!proto)
             return Type();
 
@@ -1623,24 +1624,6 @@ ImportedType ClangImporter::Implementation::importType(
       *this, allowNSUIntegerAsInt, bridging,
       completionHandlerType, completionHandlerErrorParamIndex);
   auto importResult = converter.Visit(type);
-  if (!importResult && importResult.IncompleteType &&
-      SwiftContext.LangOpts.EnableExperimentalClangImporterDiagnostics &&
-      getDiagnosticTarget()) {
-
-    StringRef forwardDeclaredTypeName = type->getTypeClassName();
-    if (const clang::Type *underlyingType = type.getTypePtrOrNull()) {
-      if (auto pointerType = dyn_cast_or_null<clang::ObjCObjectPointerType>(underlyingType)) {
-        const clang::ObjCInterfaceDecl *interfaceDecl =
-            pointerType->getInterfaceDecl();
-        if (interfaceDecl) {
-          forwardDeclaredTypeName = interfaceDecl->getName();
-        }
-      }
-    }
-
-    addPendingErrorNote(
-        Diagnostic(diag::incomplete_type, forwardDeclaredTypeName));
-  }
 
   // Now fix up the type based on how we're concretely using it.
   auto adjustedType = adjustTypeForConcreteImport(

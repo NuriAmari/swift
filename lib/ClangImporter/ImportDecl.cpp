@@ -4115,8 +4115,11 @@ namespace {
       }
 
       if (!bodyParams) {
+        std::string declName;
+        llvm::raw_string_ostream declNameStream(declName);
+        decl->printName(declNameStream);
         Impl.ifTargetMatchesReportErrorAndConsumeNotes(
-            decl, Diagnostic(diag::invoked_func_not_imported, decl->getName()),
+            decl, Diagnostic(diag::invoked_func_not_imported, declNameStream.str()),
             decl->getSourceRange().getBegin());
         return nullptr;
       }
@@ -5418,6 +5421,10 @@ namespace {
                                                            clangModule))
             return native;
 
+        Impl.addPendingErrorNote(
+            Diagnostic(diag::forward_declared_protocol_label, decl->getName()),
+            decl->getSourceRange().getBegin());
+
         forwardDeclaration = true;
         return nullptr;
       }
@@ -5550,7 +5557,8 @@ namespace {
           return result;
         } else {
           Impl.addPendingErrorNote(
-              Diagnostic(diag::forward_declaration_label, decl->getName()),
+              Diagnostic(diag::forward_declared_interface_label,
+                         decl->getName()),
               decl->getSourceRange().getBegin());
         }
 
@@ -5771,8 +5779,16 @@ namespace {
       }
 
       auto importedType = Impl.importPropertyType(decl, isInSystemModule(dc));
-      if (!importedType)
+      if (!importedType) {
+        std::string declName;
+        llvm::raw_string_ostream declNameStream(declName);
+        decl->printName(declNameStream);
+        Impl.ifTargetMatchesReportErrorAndConsumeNotes(
+            decl,
+            Diagnostic(diag::objc_property_not_imported, declNameStream.str()),
+            decl->getSourceRange().getBegin());
         return nullptr;
+      }
 
       // Check whether the property already got imported.
       if (dc == Impl.importDeclContextOf(decl, decl->getDeclContext())) {
@@ -6547,7 +6563,7 @@ Decl *SwiftDeclConverter::importGlobalAsInitializer(
 
   // Update the failability appropriately based on the imported method type.
   bool failable = false, isIUO = false;
-  if (importedType.isImplicitlyUnwrapped()) {
+  if (!importedType.getType().isNull() && importedType.isImplicitlyUnwrapped()) {
     assert(importedType.getType()->getOptionalObjectType());
     failable = true;
     isIUO = true;
