@@ -17,3 +17,24 @@ void CFunctionTakingAForwardDeclaredInterfaceAsAParameter(ForwardDeclaredInterfa
 
 NSObject<ForwardDeclaredProtocol> *CFunctionReturningAForwardDeclaredProtocol();
 void CFunctionTakingAForwardDeclaredProtocolAsAParameter(id<ForwardDeclaredProtocol> param1);
+
+@interface CompleteInterface
+@end
+@protocol CompleteProtocol
+@end
+
+@interface Foo : NSObject
+@property id<CompleteProtocol> propertyUsingACompleteProtocol;
+@property CompleteInterface *propertyUsingACompleteInterface;
+- (NSObject<CompleteProtocol> *)methodReturningCompleteProtocol;
+- (CompleteInterface *)methodReturningCompleteInterface;
+- (int)methodTakingACompleteProtocolAsAParameter:(id<CompleteProtocol>)param1;
+- (int)methodTakingACompleteInterfaceAsAParameter:(CompleteInterface *)param1
+                                       andAnother:(CompleteInterface *)param2;
+@end
+
+CompleteInterface *CFunctionReturningACompleteInterface();
+void CFunctionTakingACompleteInterfaceAsAParameter(CompleteInterface *param1);
+
+NSObject<CompleteProtocol> *CFunctionReturningACompleteProtocol();
+void CFunctionTakingACompleteProtocolAsAParameter(id<CompleteProtocol> param1);

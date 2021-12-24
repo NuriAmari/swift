@@ -50,25 +50,6 @@ static bool isInSystemModule(DeclContext *D) {
   return cast<ClangModuleUnit>(D->getModuleScopeContext())->isSystemModule();
 }
 
-static bool isMacroDiagnosticTarget(ClangImporter::Implementation &impl,
-                                    ClangNode &macroNode) {
-  const clang::ModuleMacro *moduleMacro = macroNode.getAsModuleMacro();
-  if (moduleMacro) {
-    return impl.isDiagnosticTarget(moduleMacro);
-  }
-  return impl.isDiagnosticTarget(macroNode.getAsMacroInfo());
-}
-
-static void emitMacroDiagnostic(ClangImporter::Implementation &impl,
-                                Diagnostic &&diag,
-                                const clang::SourceLocation &loc,
-                                ClangNode macroNode) {
-  if (impl.SwiftContext.LangOpts.EnableExperimentalClangImporterDiagnostics &&
-      isMacroDiagnosticTarget(impl, macroNode)) {
-    impl.diagnose(impl.convertSourceLocation(loc), diag);
-  }
-}
-
 static Optional<StringRef> getTokenSpelling(ClangImporter::Implementation &impl,
                                             const clang::Token &tok) {
   bool tokenInvalid = false;
@@ -230,12 +211,12 @@ static ValueDecl *importLiteral(ClangImporter::Implementation &Impl,
     ValueDecl *importedNumericLiteral = importNumericLiteral(
         Impl, DC, MI, name, /*signTok*/ nullptr, tok, ClangN, castType);
     if (!importedNumericLiteral) {
-      emitMacroDiagnostic(Impl,
-                          Diagnostic(diag::macro_not_imported, name.str()),
-                          MI->getDefinitionLoc(), ClangN);
-      emitMacroDiagnostic(
-          Impl, Diagnostic(diag::macro_not_imported_invalid_numeric_literal),
-          tok.getLocation(), ClangN);
+      Impl.addImportDiagnostic(
+          &tok, Diagnostic(diag::macro_not_imported_invalid_numeric_literal),
+          tok.getLocation());
+      Impl.addImportDiagnostic(MI,
+                               Diagnostic(diag::macro_not_imported, name.str()),
+                               MI->getDefinitionLoc());
     }
     return importedNumericLiteral;
   }
@@ -244,23 +225,24 @@ static ValueDecl *importLiteral(ClangImporter::Implementation &Impl,
     ValueDecl *importedStringLiteral = importStringLiteral(
         Impl, DC, MI, name, tok, MappedStringLiteralKind::CString, ClangN);
     if (!importedStringLiteral) {
-      emitMacroDiagnostic(Impl,
-                          Diagnostic(diag::macro_not_imported, name.str()),
-                          MI->getDefinitionLoc(), ClangN);
-      emitMacroDiagnostic(
-          Impl, Diagnostic(diag::macro_not_imported_invalid_string_literal),
-          tok.getLocation(), ClangN);
+      Impl.addImportDiagnostic(
+          &tok, Diagnostic(diag::macro_not_imported_invalid_string_literal),
+          tok.getLocation());
+      Impl.addImportDiagnostic(MI,
+                               Diagnostic(diag::macro_not_imported, name.str()),
+                               MI->getDefinitionLoc());
     }
     return importedStringLiteral;
   }
 
   // TODO: char literals.
   default:
-    emitMacroDiagnostic(Impl, Diagnostic(diag::macro_not_imported, name.str()),
-                        MI->getDefinitionLoc(), ClangN);
-    emitMacroDiagnostic(
-        Impl, Diagnostic(diag::macro_not_imported_unsupported_literal),
-        tok.getLocation(), ClangN);
+    Impl.addImportDiagnostic(
+        &tok, Diagnostic(diag::macro_not_imported_unsupported_literal),
+        tok.getLocation());
+    Impl.addImportDiagnostic(MI,
+                             Diagnostic(diag::macro_not_imported, name.str()),
+                             MI->getDefinitionLoc());
     return nullptr;
   }
 }
@@ -386,9 +368,9 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
          "function.");
 
   if (macro->isFunctionLike()) {
-    emitMacroDiagnostic(
-        impl, Diagnostic(diag::macro_not_imported_function_like, name.str()),
-        macro->getDefinitionLoc(), ClangN);
+    impl.addImportDiagnostic(
+        macro, Diagnostic(diag::macro_not_imported_function_like, name.str()),
+        macro->getDefinitionLoc());
     return nullptr;
   }
 
@@ -525,12 +507,13 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       ValueDecl *importedNumericLiteral = importNumericLiteral(
           impl, DC, macro, name, &first, second, ClangN, castType);
       if (!importedNumericLiteral) {
-        emitMacroDiagnostic(impl,
-                            Diagnostic(diag::macro_not_imported, name.str()),
-                            macro->getDefinitionLoc(), ClangN);
-        emitMacroDiagnostic(
-            impl, Diagnostic(diag::macro_not_imported_invalid_numeric_literal),
-            second.getLocation(), ClangN);
+        impl.addImportDiagnostic(
+            macro, Diagnostic(diag::macro_not_imported, name.str()),
+            macro->getDefinitionLoc());
+        impl.addImportDiagnostic(
+            &second,
+            Diagnostic(diag::macro_not_imported_invalid_numeric_literal),
+            second.getLocation());
       }
       return importedNumericLiteral;
     }
@@ -541,12 +524,13 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
           importStringLiteral(impl, DC, macro, name, second,
                               MappedStringLiteralKind::NSString, ClangN);
       if (!importedStringLiteral) {
-        emitMacroDiagnostic(impl,
-                            Diagnostic(diag::macro_not_imported, name.str()),
-                            macro->getDefinitionLoc(), ClangN);
-        emitMacroDiagnostic(
-            impl, Diagnostic(diag::macro_not_imported_invalid_string_literal),
-            second.getLocation(), ClangN);
+        impl.addImportDiagnostic(
+            macro, Diagnostic(diag::macro_not_imported, name.str()),
+            macro->getDefinitionLoc());
+        impl.addImportDiagnostic(
+            &second,
+            Diagnostic(diag::macro_not_imported_invalid_string_literal),
+            second.getLocation());
       }
       return importedStringLiteral;
     }
@@ -566,11 +550,11 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       firstValue     = firstInt->first;
       firstSwiftType = firstInt->second;
     } else {
-      emitMacroDiagnostic(
-          impl,
+      impl.addImportDiagnostic(
+          macro,
           Diagnostic(diag::macro_not_imported_unsupported_structure,
                      name.str()),
-          macro->getDefinitionLoc(), ClangN);
+          macro->getDefinitionLoc());
       return nullptr;
     }
 
@@ -581,11 +565,11 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
       secondValue     = secondInt->first;
       secondSwiftType = secondInt->second;
     } else {
-      emitMacroDiagnostic(
-          impl,
+      impl.addImportDiagnostic(
+          macro,
           Diagnostic(diag::macro_not_imported_unsupported_structure,
                      name.str()),
-          macro->getDefinitionLoc(), ClangN);
+          macro->getDefinitionLoc());
       return nullptr;
     }
 
@@ -699,21 +683,22 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
 
     // Unhandled operators.
     } else {
-      emitMacroDiagnostic(impl,
-                          Diagnostic(diag::macro_not_imported, name.str()),
-                          macro->getDefinitionLoc(), ClangN);
       if (Optional<StringRef> operatorSpelling =
               getTokenSpelling(impl, tokenI[1])) {
-        emitMacroDiagnostic(
-            impl,
+        impl.addImportDiagnostic(
+            &tokenI[1],
             Diagnostic(diag::macro_not_imported_unsupported_named_operator,
                        *operatorSpelling),
-            tokenI[1].getLocation(), ClangN);
+            tokenI[1].getLocation());
       } else {
-        emitMacroDiagnostic(
-            impl, Diagnostic(diag::macro_not_imported_unsupported_operator),
-            tokenI[1].getLocation(), ClangN);
+        impl.addImportDiagnostic(
+            &tokenI[1],
+            Diagnostic(diag::macro_not_imported_unsupported_operator),
+            tokenI[1].getLocation());
       }
+      impl.addImportDiagnostic(macro,
+                               Diagnostic(diag::macro_not_imported, name.str()),
+                               macro->getDefinitionLoc());
       return nullptr;
     }
 
@@ -754,10 +739,10 @@ static ValueDecl *importMacro(ClangImporter::Implementation &impl,
     break;
   }
 
-  emitMacroDiagnostic(
-      impl,
+  impl.addImportDiagnostic(
+      macro,
       Diagnostic(diag::macro_not_imported_unsupported_structure, name.str()),
-      macro->getDefinitionLoc(), ClangN);
+      macro->getDefinitionLoc());
   return nullptr;
 }
 
@@ -775,17 +760,9 @@ ValueDecl *ClangImporter::Implementation::importMacro(Identifier name,
     // Push in a placeholder to break circularity.
     ImportedMacros[name].push_back({macro, nullptr});
   } else {
-    // If diagnostics for a directly referenced macro that could not be imported
-    // have not been reported, import the macro once more, ignoring the cache.
-    bool diagnosticsForReferencedMacroProduced =
-        !isMacroDiagnosticTarget(*this, macroNode);
-
     // Check whether this macro has already been imported.
     for (const auto &entry : known->second) {
-      // We wish to access the cached results if the previous import was
-      // successful, it failed but we already produced diagnostics.
-      if (entry.first == macro &&
-          (entry.second || diagnosticsForReferencedMacroProduced))
+      if (entry.first == macro)
         return entry.second;
     }
 
@@ -795,15 +772,13 @@ ValueDecl *ClangImporter::Implementation::importMacro(Identifier name,
     for (const auto &entry : known->second) {
       // If the macro is equal to an existing macro, map down to the same
       // declaration.
-      // If it is identical to an existing macro which couldn't be imported, and
-      // no diagnostics were suppressed when it was last imported, import again.
-      if (macro->isIdenticalTo(*entry.first, clangPP, true) &&
-          (entry.second || diagnosticsForReferencedMacroProduced)) {
+      if (macro->isIdenticalTo(*entry.first, clangPP, true)) {
         ValueDecl *result = entry.second;
         known->second.push_back({macro, result});
         return result;
       }
     }
+
     // If not, push in a placeholder to break circularity.
     known->second.push_back({macro, nullptr});
   }

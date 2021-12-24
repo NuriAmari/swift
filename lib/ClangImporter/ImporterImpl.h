@@ -33,11 +33,13 @@
 #include "swift/ClangImporter/ClangModule.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclVisitor.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Serialization/ModuleFileExtension.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallSet.h"
@@ -184,12 +186,19 @@ enum class ImportTypeKind {
   Enum
 };
 
-struct PendingErrorNote {
+struct ImportDiagnostic {
+  ImportDiagnosticTarget target;
   Diagnostic diag;
-  SwiftLookupTable::SingleEntry target;
+  clang::SourceLocation loc;
 
-  PendingErrorNote(const Diagnostic &diag, SwiftLookupTable::SingleEntry target)
-      : diag(diag), target(target) {}
+  ImportDiagnostic(ImportDiagnosticTarget target, const Diagnostic &diag,
+                   clang::SourceLocation loc)
+      : target(target), diag(diag), loc(loc) {}
+
+  bool operator==(const ImportDiagnostic &other) const {
+    return target == other.target && loc == other.loc &&
+           diag.getID() == other.diag.getID();
+  }
 };
 
 /// Controls whether \p decl, when imported, should name the fully-bridged
@@ -341,9 +350,16 @@ struct HeaderLoc {
     : clangLoc(clangLoc), fallbackLoc(fallbackLoc), sourceMgr(sourceMgr) {}
 };
 
-struct SwiftLookupTableSingleEntryHasher {
-  std::size_t operator()(const SwiftLookupTable::SingleEntry &entry) const {
-    return std::hash<void *>()(entry.getOpaqueValue());
+struct ImportDiagnosticTargetHasher {
+  std::size_t operator()(const ImportDiagnosticTarget &target) const {
+    return std::hash<void *>()(target.getOpaqueValue());
+  }
+};
+
+struct ImportDiagnosticHasher {
+  std::size_t operator()(const ImportDiagnostic &diag) const {
+    return llvm::hash_combine(diag.target.getOpaqueValue(), diag.diag.getID(),
+                              diag.loc.getHashValue());
   }
 };
 
@@ -360,17 +376,38 @@ public:
                  DWARFImporterDelegate *dwarfImporterDelegate);
   ~Implementation();
 
+  class DiagnosticWalker : public clang::RecursiveASTVisitor<DiagnosticWalker> {
+  public:
+    DiagnosticWalker(ClangImporter::Implementation &Impl);
+    bool TraverseDecl(clang::Decl *D);
+    bool TraverseParmVarDecl(clang::ParmVarDecl *D);
+    bool VisitDecl(clang::Decl *D);
+    bool VisitMacro(const clang::MacroInfo *MI);
+    bool VisitObjCObjectPointerType(clang::ObjCObjectPointerType *T);
+    bool VisitType(clang::Type *T);
+
+  private:
+    Implementation &Impl;
+    clang::SourceLocation TypeReferenceSourceLocation;
+  };
+
   /// Swift AST context.
   ASTContext &SwiftContext;
 
-  SwiftLookupTable::SingleEntry DiagnosticTarget = nullptr;
-  std::vector<PendingErrorNote> PendingErrorNotes;
-  std::unordered_set<SwiftLookupTable::SingleEntry,
-                     SwiftLookupTableSingleEntryHasher>
-      ReportedDiagnosticTargets;
-  /// Used to indicate when the importer is being used to eagerly import
-  /// a collection of ClangDecls.
-  bool EagerImportActive = false;
+  // Associates a vector of import diagnostics with a ClangNode
+  std::unordered_map<ImportDiagnosticTarget, std::vector<ImportDiagnostic>,
+                     ImportDiagnosticTargetHasher>
+      ImportDiagnostics;
+
+  // Tracks the set of import diagnostics already produced for deduplication
+  // purposes.
+  std::unordered_set<ImportDiagnostic, ImportDiagnosticHasher>
+      CollectedDiagnostics;
+
+  // ClangNodes for which all import diagnostics have been both collected and
+  // emitted.
+  std::unordered_set<ImportDiagnosticTarget, ImportDiagnosticTargetHasher>
+      DiagnosedValues;
 
   const bool ImportForwardDeclarations;
   const bool DisableSwiftBridgeAttr;
@@ -389,6 +426,8 @@ public:
     "<bridging-header-import>";
 
 private:
+  DiagnosticWalker Walker;
+
   /// The Swift lookup table for the bridging header.
   std::unique_ptr<SwiftLookupTable> BridgingHeaderLookupTable;
 
@@ -825,6 +864,11 @@ public:
   /// imported or that are not reflected in a generated interface.
   template<typename ...Args>
   void diagnose(HeaderLoc loc, Args &&...args) {
+    // If we're in the middle of pretty-printing, suppress diagnostics.
+    if (SwiftContext.Diags.isPrettyPrintingDecl()) {
+      return;
+    }
+
     auto swiftLoc = loc.fallbackLoc;
     if (loc.clangLoc.isValid()) {
       auto &clangSrcMgr = loc.sourceMgr ? *loc.sourceMgr
@@ -837,49 +881,9 @@ public:
     SwiftContext.Diags.diagnose(swiftLoc, std::forward<Args>(args)...);
   }
 
-  void diagnose(SourceLoc loc, const Diagnostic &diag) {
-    // If we're in the middle of pretty-printing, suppress diagnostics.
-    if (SwiftContext.Diags.isPrettyPrintingDecl()) {
-      return;
-    }
-    SwiftContext.Diags.diagnose(loc, diag);
-  }
-
-  SourceLoc convertSourceLocation(const clang::SourceLocation &loc);
-
-  SwiftLookupTable::SingleEntry getDiagnosticTarget();
-  template <typename T>
-  T withDiagnosticTargetIfNotAlreadyReported(
-      const SwiftLookupTable::SingleEntry &target, std::function<T()> fn);
-  template <typename T>
-  T withDiagnosticTarget(const SwiftLookupTable::SingleEntry &target,
-                         std::function<T()> fn);
-
-  bool isDiagnosticTarget(const SwiftLookupTable::SingleEntry &target) const;
-  bool isDiagnosticTarget(const clang::NamedDecl *targetCandidate) const;
-  bool isDiagnosticTarget(const clang::ModuleMacro *targetCandidate) const;
-  bool isDiagnosticTarget(const clang::MacroInfo *targetCandidate) const;
-
-  bool getEagerImportActive();
-
-  /// If the current diagnostic target matches \p target, emit \p
-  /// error and emit any pending error notes associated with \p target. The
-  /// emitted notes will be attached to the error and the remaining notes will
-  /// be discarded.
-  void
-  ifTargetMatchesReportErrorAndConsumeNotes(const clang::NamedDecl *target,
-                                            Diagnostic &&error,
-                                            const clang::SourceLocation &loc);
-  /// Appends \note to the pending error notes queue.
-  void addPendingErrorNote(Diagnostic &&note);
-  /// Appends \note to the pending error notes queue, attaching \loc to the
-  /// note.
-  void addPendingErrorNote(Diagnostic &&note, const clang::SourceLocation &loc);
-
-  /// Apply \loc to any notes in the pending error notes queue which do not
-  /// already have a source location.
-  void
-  applySourceLocationToNotesWithoutLocation(const clang::SourceLocation &loc);
+  void addImportDiagnostic(
+      ImportDiagnosticTarget target, Diagnostic &&diag,
+      const clang::SourceLocation &loc = clang::SourceLocation());
 
   /// Import the given Clang identifier into Swift.
   ///
@@ -1444,17 +1448,15 @@ public:
     return found->second;
   }
 
-  virtual bool
-  diagnosticsProducedForNamedMembers(const IterableDeclContext *IDC,
-                                     DeclBaseName N,
-                                     uint64_t contextData) override;
-
   virtual void
   loadAllMembers(Decl *D, uint64_t unused) override;
 
   virtual TinyPtrVector<ValueDecl *>
   loadNamedMembers(const IterableDeclContext *IDC, DeclBaseName N,
                    uint64_t contextData) override;
+
+  virtual void diagnoseMissingNamedMember(const IterableDeclContext *IDC,
+                                          DeclName name) override;
 
 private:
   void
@@ -1598,6 +1600,21 @@ public:
   void lookupAllObjCMembers(SwiftLookupTable &table,
                             VisibleDeclConsumer &consumer);
 
+  /// Emit any import diagnostics associated with the given name.
+  void diagnoseValue(SwiftLookupTable &table, DeclName name);
+
+  /// Emit any import diagnostics associated with the given Clang node.
+  void diagnoseTargetDirectly(ImportDiagnosticTarget target);
+
+private:
+  ImportDiagnosticTarget importDiagnosticTargetFromLookupTableEntry(
+      SwiftLookupTable::SingleEntry entry);
+
+  bool emitDiagnosticsForTarget(
+      ImportDiagnosticTarget target,
+      clang::SourceLocation fallbackLoc = clang::SourceLocation());
+
+public:
   /// Determine the effective Clang context for the given Swift nominal type.
   EffectiveClangContext
   getEffectiveClangContext(const NominalTypeDecl *nominal);

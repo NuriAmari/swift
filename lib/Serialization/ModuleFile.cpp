@@ -701,11 +701,6 @@ ModuleFile::loadFingerprint(const IterableDeclContext *IDC) const {
   return *it;
 }
 
-bool ModuleFile::diagnosticsProducedForNamedMembers(
-    const IterableDeclContext *IDC, DeclBaseName N, uint64_t contextData) {
-  return true;
-}
-
 TinyPtrVector<ValueDecl *>
 ModuleFile::loadNamedMembers(const IterableDeclContext *IDC, DeclBaseName N,
                              uint64_t contextData) {

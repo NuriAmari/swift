@@ -380,36 +380,36 @@ namespace {
     }
 
     ImportResult VisitExtIntType(const clang::ExtIntType *type) {
-      Impl.addPendingErrorNote(
-          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
+      Impl.addImportDiagnostic(type, Diagnostic(diag::unsupported_builtin_type,
+                                                type->getTypeClassName()));
       // ExtInt is not supported in Swift.
       return Type();
     }
 
     ImportResult VisitPipeType(const clang::PipeType *type) {
-      Impl.addPendingErrorNote(
-          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
+      Impl.addImportDiagnostic(type, Diagnostic(diag::unsupported_builtin_type,
+                                                type->getTypeClassName()));
       // OpenCL types are not supported in Swift.
       return Type();
     }
 
     ImportResult VisitMatrixType(const clang::MatrixType *ty) {
-      Impl.addPendingErrorNote(
-          Diagnostic(diag::unsupported_builtin_type, ty->getTypeClassName()));
+      Impl.addImportDiagnostic(ty, Diagnostic(diag::unsupported_builtin_type,
+                                              ty->getTypeClassName()));
       // Matrix types are not supported in Swift.
       return Type();
     }
 
     ImportResult VisitComplexType(const clang::ComplexType *type) {
-      Impl.addPendingErrorNote(
-          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
+      Impl.addImportDiagnostic(type, Diagnostic(diag::unsupported_builtin_type,
+                                                type->getTypeClassName()));
       // FIXME: Implement once Complex is in the library.
       return Type();
     }
 
     ImportResult VisitAtomicType(const clang::AtomicType *type) {
-      Impl.addPendingErrorNote(
-          Diagnostic(diag::unsupported_builtin_type, type->getTypeClassName()));
+      Impl.addImportDiagnostic(type, Diagnostic(diag::unsupported_builtin_type,
+                                                type->getTypeClassName()));
       // FIXME: handle pointers and fields of atomic type
       return Type();
     }
@@ -993,14 +993,23 @@ namespace {
     VisitObjCObjectPointerType(const clang::ObjCObjectPointerType *type) {
       Type importedType = Impl.SwiftContext.getAnyObjectType();
 
+      if (!type->qual_empty()) {
+        for (auto cp = type->qual_begin(), end = type->qual_end(); cp != end;
+             ++cp) {
+          if (!(*cp)->hasDefinition())
+            Impl.addImportDiagnostic(
+                type, Diagnostic(diag::incomplete_protocol, *cp));
+        }
+      }
+
       // If this object pointer refers to an Objective-C class (possibly
       // qualified),
       if (auto objcClass = type->getInterfaceDecl()) {
         auto imported = castIgnoringCompatibilityAlias<ClassDecl>(
             Impl.importDecl(objcClass, Impl.CurrentVersion));
         if (!imported && !objcClass->hasDefinition())
-          Impl.addPendingErrorNote(
-              Diagnostic(diag::incomplete_interface, objcClass->getName()));
+          Impl.addImportDiagnostic(
+              type, Diagnostic(diag::incomplete_interface, objcClass));
 
         if (!imported)
           return nullptr;
@@ -1185,8 +1194,6 @@ namespace {
              cp != cpEnd; ++cp) {
           auto proto = castIgnoringCompatibilityAlias<ProtocolDecl>(
             Impl.importDecl(*cp, Impl.CurrentVersion));
-            Impl.addPendingErrorNote(
-                Diagnostic(diag::incomplete_protocol, (*cp)->getName()));
           if (!proto)
             return Type();
 
@@ -1856,9 +1863,7 @@ ImportedType ClangImporter::Implementation::importFunctionParamsAndReturnType(
     importedType =
         importFunctionReturnType(dc, clangDecl, allowNSUIntegerAsInt);
     if (!importedType) {
-      applySourceLocationToNotesWithoutLocation(
-          clangDecl->getSourceRange().getBegin());
-      addPendingErrorNote(Diagnostic(diag::return_type_not_imported),
+      addImportDiagnostic(clangDecl, Diagnostic(diag::return_type_not_imported),
                           clangDecl->getSourceRange().getBegin());
       return {Type(), false};
     }
@@ -1960,10 +1965,8 @@ ParameterList *ClangImporter::Implementation::importFunctionParameterList(
       auto importedType = importType(paramTy, importKind, allowNSUIntegerAsInt,
                                      Bridgeability::Full, OptionalityOfParam);
       if (!importedType) {
-        applySourceLocationToNotesWithoutLocation(
-            param->getSourceRange().getBegin());
-        addPendingErrorNote(
-            Diagnostic(diag::parameter_type_not_imported, param->getName()),
+        addImportDiagnostic(
+            param, Diagnostic(diag::parameter_type_not_imported, param),
             param->getSourceRange().getBegin());
         return nullptr;
       }
@@ -2417,9 +2420,7 @@ ImportedType ClangImporter::Implementation::importMethodParamsAndReturnType(
   }
 
   if (!swiftResultTy) {
-    applySourceLocationToNotesWithoutLocation(
-        clangDecl->getSourceRange().getBegin());
-    addPendingErrorNote(Diagnostic(diag::return_type_not_imported),
+    addImportDiagnostic(clangDecl, Diagnostic(diag::return_type_not_imported),
                         clangDecl->getSourceRange().getBegin());
     return {Type(), false};
   }
@@ -2530,11 +2531,9 @@ ImportedType ClangImporter::Implementation::importMethodParamsAndReturnType(
       swiftParamTy = importedParamType.getType();
     }
     if (!swiftParamTy) {
-      applySourceLocationToNotesWithoutLocation(
-          param->getSourceRange().getBegin());
-      addPendingErrorNote(
-          Diagnostic(diag::parameter_type_not_imported, param->getName()),
-          param->getSourceRange().getBegin());
+      addImportDiagnostic(param,
+                          Diagnostic(diag::parameter_type_not_imported, param),
+                          param->getSourceRange().getBegin());
       return {Type(), false};
     }
 

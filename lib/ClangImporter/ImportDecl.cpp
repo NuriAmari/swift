@@ -4115,11 +4115,8 @@ namespace {
       }
 
       if (!bodyParams) {
-        std::string declName;
-        llvm::raw_string_ostream declNameStream(declName);
-        decl->printName(declNameStream);
-        Impl.ifTargetMatchesReportErrorAndConsumeNotes(
-            decl, Diagnostic(diag::invoked_func_not_imported, declNameStream.str()),
+        Impl.addImportDiagnostic(
+            decl, Diagnostic(diag::invoked_func_not_imported, decl),
             decl->getSourceRange().getBegin());
         return nullptr;
       }
@@ -4285,8 +4282,8 @@ namespace {
           Impl.importType(decl->getType(), ImportTypeKind::RecordField,
                           isInSystemModule(dc), Bridgeability::None);
       if (!importedType) {
-        Impl.ifTargetMatchesReportErrorAndConsumeNotes(
-            decl, Diagnostic(diag::record_field_not_imported, decl->getName()),
+        Impl.addImportDiagnostic(
+            decl, Diagnostic(diag::record_field_not_imported, decl),
             decl->getSourceRange().getBegin());
         return nullptr;
       }
@@ -4605,15 +4602,6 @@ namespace {
       auto dc = Impl.importDeclContextOf(decl, decl->getDeclContext());
       if (!dc)
         return nullptr;
-
-      // Do not produce diagnostics for inactive versions (nullify target),
-      // and restore target to original value after returning.
-      SwiftLookupTable::SingleEntry currentDiagnosticTarget =
-          Impl.getDiagnosticTarget();
-      if (!isActiveSwiftVersion())
-        Impl.DiagnosticTarget = nullptr;
-
-      SWIFT_DEFER { Impl.DiagnosticTarget = currentDiagnosticTarget; };
 
       // While importing the DeclContext, we might have imported the decl
       // itself.
@@ -4949,13 +4937,8 @@ namespace {
             asyncConvention, errorConvention, kind);
 
         if (!importedType) {
-          std::string declName;
-          llvm::raw_string_ostream declNameStream(declName);
-          decl->printName(declNameStream);
-          Impl.ifTargetMatchesReportErrorAndConsumeNotes(
-              decl,
-              Diagnostic(diag::record_method_not_imported,
-                         declNameStream.str()),
+          Impl.addImportDiagnostic(
+              decl, Diagnostic(diag::record_method_not_imported, decl),
               decl->getSourceRange().getBegin());
         }
       }
@@ -5421,8 +5404,8 @@ namespace {
                                                            clangModule))
             return native;
 
-        Impl.addPendingErrorNote(
-            Diagnostic(diag::forward_declared_protocol_label, decl->getName()),
+        Impl.addImportDiagnostic(
+            decl, Diagnostic(diag::forward_declared_protocol_label, decl),
             decl->getSourceRange().getBegin());
 
         forwardDeclaration = true;
@@ -5556,9 +5539,8 @@ namespace {
               new (Impl.SwiftContext) ForbidSerializingReferenceAttr(true));
           return result;
         } else {
-          Impl.addPendingErrorNote(
-              Diagnostic(diag::forward_declared_interface_label,
-                         decl->getName()),
+          Impl.addImportDiagnostic(
+              decl, Diagnostic(diag::forward_declared_interface_label, decl),
               decl->getSourceRange().getBegin());
         }
 
@@ -5780,12 +5762,8 @@ namespace {
 
       auto importedType = Impl.importPropertyType(decl, isInSystemModule(dc));
       if (!importedType) {
-        std::string declName;
-        llvm::raw_string_ostream declNameStream(declName);
-        decl->printName(declNameStream);
-        Impl.ifTargetMatchesReportErrorAndConsumeNotes(
-            decl,
-            Diagnostic(diag::objc_property_not_imported, declNameStream.str()),
+        Impl.addImportDiagnostic(
+            decl, Diagnostic(diag::objc_property_not_imported, decl),
             decl->getSourceRange().getBegin());
         return nullptr;
       }
@@ -9913,8 +9891,6 @@ ClangImporter::Implementation::loadAllMembers(Decl *D, uint64_t extra) {
   FrontendStatsTracer tracer(D->getASTContext().Stats,
                              "load-all-members", D);
   assert(D);
-
-  llvm::SaveAndRestore<bool> sar(EagerImportActive, true);
 
   // If a Clang decl has no owning module, then it needs to be added to the
   // bridging header lookup table. This has most likely already been done, but
