@@ -4393,9 +4393,35 @@ namespace {
                                                            clangModule))
             return native;
 
-        Impl.addImportDiagnostic(
-            decl, Diagnostic(diag::forward_declared_protocol_label, decl),
-            decl->getSourceRange().getBegin());
+        if (Impl.ImportForwardDeclarations) {
+          auto result = Impl.createDeclWithClangNode<ProtocolDecl>(
+              decl, AccessLevel::Public,
+              Impl.getClangModuleForDecl(decl->getCanonicalDecl(),
+                                         /*allowForwardDeclaration=*/true),
+              SourceLoc(), SourceLoc(), name,
+              ArrayRef<PrimaryAssociatedTypeName>(), None,
+              /*TrailingWhere=*/nullptr);
+
+          Impl.ImportedDecls[{decl->getCanonicalDecl(), getVersion()}] = result;
+          result->setSuperclass(Impl.getNSObjectProtocolType());
+          result->setAddedImplicitInitializers(); // suppress all initializers
+          addObjCAttribute(result,
+                           Impl.importIdentifier(decl->getIdentifier()));
+          SmallVector<InheritedEntry, 4> inheritedTypes = {
+              TypeLoc::withoutLoc(Impl.getNSObjectProtocolType())};
+          result->setInherited(Impl.SwiftContext.AllocateCopy(inheritedTypes));
+          result->setImplicit();
+          auto attr = AvailableAttr::createPlatformAgnostic(
+              Impl.SwiftContext,
+              "This Objective-C protocol has only been forward-declared; "
+              "import its owning module to use it");
+          result->getAttrs().add(attr);
+          return result;
+        } else {
+          Impl.addImportDiagnostic(
+              decl, Diagnostic(diag::forward_declared_protocol_label, decl),
+              decl->getSourceRange().getBegin());
+        }
 
         forwardDeclaration = true;
         return nullptr;
@@ -4464,7 +4490,7 @@ namespace {
                                                         nullptr, dc,
                                                         /*isActor*/false);
         Impl.ImportedDecls[{decl->getCanonicalDecl(), getVersion()}] = result;
-        result->setSuperclass(Type());
+        result->setSuperclass(Impl.getNSObjectType());
         result->setAddedImplicitInitializers(); // suppress all initializers
         result->setHasMissingVTableEntries(false);
         addObjCAttribute(result, Impl.importIdentifier(decl->getIdentifier()));

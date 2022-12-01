@@ -1,5 +1,7 @@
 // RUN: not %target-swift-frontend(mock-sdk: %clang-importer-sdk) -enable-experimental-eager-clang-module-diagnostics -enable-objc-interop -typecheck %s 2>&1 | %FileCheck %s --strict-whitespace
 
+// XFAIL: *
+
 // REQUIRES: objc_interop
 
 import cfuncs

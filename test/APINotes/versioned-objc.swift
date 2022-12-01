@@ -1,7 +1,7 @@
 // RUN: %empty-directory(%t)
 
-// RUN: not %target-swift-frontend -typecheck -F %S/Inputs/custom-frameworks -swift-version 5 %s 2>&1 | %FileCheck -check-prefix=CHECK-DIAGS -check-prefix=CHECK-DIAGS-5 %s
-// RUN: not %target-swift-frontend -typecheck -F %S/Inputs/custom-frameworks -swift-version 4 %s 2>&1 | %FileCheck -check-prefix=CHECK-DIAGS -check-prefix=CHECK-DIAGS-4 %s
+// RUN: not %target-swift-frontend -no-import-objc-forward-declarations -typecheck -F %S/Inputs/custom-frameworks -swift-version 5 %s 2>&1 | %FileCheck -check-prefix=CHECK-DIAGS -check-prefix=CHECK-DIAGS-5 %s
+// RUN: not %target-swift-frontend -no-import-objc-forward-declarations -typecheck -F %S/Inputs/custom-frameworks -swift-version 4 %s 2>&1 | %FileCheck -check-prefix=CHECK-DIAGS -check-prefix=CHECK-DIAGS-4 %s
 
 // REQUIRES: objc_interop
 

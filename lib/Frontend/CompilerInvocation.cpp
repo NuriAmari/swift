@@ -1272,6 +1272,9 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
   }
 
   Opts.DumpClangDiagnostics |= Args.hasArg(OPT_dump_clang_diagnostics);
+  if (Args.hasArg(OPT_no_import_objc_forward_declarations)) {
+    Opts.ImportForwardDeclarations = false;
+  }
 
   if (Args.hasArg(OPT_embed_bitcode))
     Opts.Mode = ClangImporterOptions::Modes::EmbedBitcode;

@@ -1,0 +1,3 @@
+module ForwardDeclarations {
+    header "forward-declarations.h"
+}
