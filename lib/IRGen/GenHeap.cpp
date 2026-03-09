@@ -136,6 +136,9 @@ namespace {
           ValueTypeAndIsOptional.getPointer()->getContext(), \
           getFixedSize().getValueInBits()); \
     } \
+    void dump() const override { \
+      llvm::errs() << #Nativeness #Name "ReferenceTypeInfo\n"; \
+    } \
   };
 #define ALWAYS_LOADABLE_CHECKED_REF_STORAGE_HELPER(Name, Nativeness) \
   class Nativeness##Name##ReferenceTypeInfo \
@@ -214,6 +217,9 @@ namespace {
                                                ReferenceOwnership::Name, \
                                                ReferenceCounting::Nativeness); \
     } \
+    void dump() const override { \
+      llvm::errs() << #Nativeness #Name "ReferenceTypeInfo\n"; \
+    } \
   };
 
   // The nativeness of a reference storage type is a policy decision.
@@ -257,6 +263,9 @@ namespace {
                               Address dest, SILType T, bool isOutlined) \
     const override { \
       return storeHeapObjectExtraInhabitant(IGF, index, dest); \
+    } \
+    void dump() const override { \
+      llvm::errs() << #Name "ReferenceTypeInfo\n"; \
     } \
   };
 #include "swift/AST/ReferenceStorage.def"
@@ -601,6 +610,8 @@ namespace {
     ReferenceCounting getReferenceCounting() const {
       return ReferenceCounting::Native;
     }
+
+    void dump() const override { llvm::errs() << "BuiltinNativeObjectTypeInfo\n"; }
   };
 } // end anonymous namespace
 
@@ -1517,6 +1528,8 @@ class EmptyBoxTypeInfo final : public BoxTypeInfo {
 public:
   EmptyBoxTypeInfo(IRGenModule &IGM) : BoxTypeInfo(IGM) {}
 
+  void dump() const override { llvm::errs() << "EmptyBoxTypeInfo\n"; }
+
   OwnedAddress
   allocate(IRGenFunction &IGF, GenericEnvironment *env, SILBoxType *box,
            const llvm::Twine &name) const override {
@@ -1544,6 +1557,8 @@ public:
 class NonFixedBoxTypeInfo final : public BoxTypeInfo {
 public:
   NonFixedBoxTypeInfo(IRGenModule &IGM) : BoxTypeInfo(IGM) {}
+
+  void dump() const override { llvm::errs() << "NonFixedBoxTypeInfo\n"; }
 
   OwnedAddress
   allocate(IRGenFunction &IGF, GenericEnvironment *env, SILBoxType *boxType,
@@ -1653,6 +1668,8 @@ public:
     : FixedBoxTypeInfoBase(IGM, getHeapLayoutForSingleTypeInfo(IGM,
                              IGM.getOpaqueStorageTypeInfo(stride, alignment))) {
   }
+
+  void dump() const override { llvm::errs() << "PODBoxTypeInfo\n"; }
 };
 
 /// Common implementation for single-refcounted boxes.
@@ -1663,6 +1680,8 @@ public:
                                    IGM.getReferenceObjectTypeInfo(refcounting)))
   {
   }
+
+  void dump() const override { llvm::errs() << "SingleRefcountedBoxTypeInfo\n"; }
 };
 
 /// Implementation of a box for a specific type.
@@ -1700,6 +1719,8 @@ public:
   FixedBoxTypeInfo(IRGenModule &IGM, SILBoxType *T)
     : FixedBoxTypeInfoBase(IGM, getHeapLayout(IGM, T))
   {}
+
+  void dump() const override { llvm::errs() << "FixedBoxTypeInfo\n"; }
 };
 
 } // end anonymous namespace

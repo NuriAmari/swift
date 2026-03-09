@@ -93,6 +93,12 @@ enum IsInfiniteType_t : bool {
   IsInfiniteType = true,
 };
 
+/// Should the lifetime of this value be tied to its lexical scope?
+enum IsLexical_t : bool {
+  IsNotLexical = false,
+  IsLexical = true,
+};
+
 /// Does this type contain any pack-like thing.
 enum HasPack_t : bool {
   HasNoPack = false,
@@ -330,6 +336,16 @@ public:
   void setDefinitelyHasRawLayout() {
     Flags |= HasRawLayoutFlag;
     Flags |= DefinitelyHasRawLayoutFlag;
+  }
+
+  /// Get the raw flags value for serialization.
+  uint16_t getRawFlags() const { return Flags; }
+
+  /// Construct from raw serialized flags.
+  static SILTypeProperties fromRawFlags(uint16_t flags) {
+    SILTypeProperties props;
+    props.Flags = flags;
+    return props;
   }
 };
 

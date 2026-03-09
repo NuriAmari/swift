@@ -31,6 +31,7 @@
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/Defer.h"
 #include "swift/ClangImporter/ClangModule.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILDefaultOverrideTable.h"
 #include "swift/SIL/SILModule.h"
@@ -1802,6 +1803,10 @@ namespace {
       llvm_unreachable("should not IRGen classes with missing members");
     }
 
+    void visitHiddenTypeLayoutInfoDecl(HiddenTypeLayoutInfoDecl *) {
+      llvm_unreachable("hidden type layout decls themselves do not produce IR, they inform the IR to generate for other decls");
+    }
+
     void addIVarInitializer() {
       if (auto fn = IGM.getAddrOfIVarInitDestroy(getClass(),
                                                  /*destroy*/ false,
@@ -2821,6 +2826,40 @@ TypeConverter::convertClassType(CanType type, ClassDecl *D) {
   return new ClassTypeInfo(IGM.PtrTy, IGM.getPointerSize(),
                            std::move(spareBits), IGM.getPointerAlignment(), D,
                            refcount, ST);
+}
+
+namespace {
+  /// A type info implementation for hidden reference types (classes behind
+  /// @_implementationOnly imports). Unlike ClassTypeInfo, this doesn't carry
+  /// a ClassDecl or class layout — just the reference counting convention.
+  class HiddenReferenceTypeTypeInfo
+      : public HeapTypeInfo<HiddenReferenceTypeTypeInfo> {
+    ReferenceCounting Refcount;
+  public:
+    HiddenReferenceTypeTypeInfo(llvm::PointerType *storageType, Size size,
+                                SpareBitVector spareBits, Alignment align,
+                                ReferenceCounting refcount)
+      : HeapTypeInfo(refcount, storageType, size, std::move(spareBits), align),
+        Refcount(refcount) {}
+
+    ReferenceCounting getReferenceCounting() const { return Refcount; }
+
+    void dump() const override {
+      llvm::errs() << "HiddenReferenceTypeTypeInfo\n";
+    }
+  };
+} // end anonymous namespace
+
+const TypeInfo *irgen::createReferenceTypeInfoFromABIInfo(
+    IRGenModule &IGM,
+    const HiddenReferenceTypeIRABIInfo &abiInfo) {
+  assert(abiInfo.getReferenceCounting() == ReferenceCounting::Native &&
+         "Only native reference counting is currently supported for "
+         "hidden types");
+  return new HiddenReferenceTypeTypeInfo(IGM.PtrTy, IGM.getPointerSize(),
+                                         IGM.getHeapObjectSpareBits(),
+                                         IGM.getPointerAlignment(),
+                                         abiInfo.getReferenceCounting());
 }
 
 /// Lazily declare a fake-looking class to represent an ObjC runtime base class.

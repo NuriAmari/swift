@@ -724,6 +724,7 @@ public:
   UNREACHABLE(Missing, "does not have access control")
   UNREACHABLE(MissingMember, "does not have access control")
   UNREACHABLE(MacroExpansion, "does not have access control")
+  UNREACHABLE(HiddenTypeLayoutInfo, "does not have access control")
 
   UNREACHABLE(BuiltinTuple, "BuiltinTupleDecl should not show up here")
 
@@ -1488,6 +1489,7 @@ public:
   UNREACHABLE(Missing, "does not have access control")
   UNREACHABLE(MissingMember, "does not have access control")
   UNREACHABLE(MacroExpansion, "does not have access control")
+  UNREACHABLE(HiddenTypeLayoutInfo, "does not have access control")
   UNREACHABLE(BuiltinTuple, "BuiltinTupleDecl should not show up here")
 
 #undef UNREACHABLE
@@ -2369,6 +2371,7 @@ public:
   UNREACHABLE(GenericTypeParam, "handled by the enclosing declaration")
   UNREACHABLE(MissingMember, "handled by the enclosing declaration")
   UNREACHABLE(MacroExpansion, "handled by the enclosing declaration")
+  UNREACHABLE(HiddenTypeLayoutInfo, "not applicable")
 #undef UNREACHABLE
 
 #define UNINTERESTING(KIND) \

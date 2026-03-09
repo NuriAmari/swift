@@ -111,6 +111,7 @@ case TypeKind::Id:
 #define TYPE(Id, Parent)
 #include "swift/AST/TypeNodes.def"
     case TypeKind::Error:
+    case TypeKind::HiddenTypeLayoutInfo:
     case TypeKind::TypeVariable:
     case TypeKind::Placeholder:
     case TypeKind::SILToken:

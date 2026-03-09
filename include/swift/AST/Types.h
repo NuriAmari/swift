@@ -94,6 +94,7 @@ class TypeAliasDecl;
 class TypeDecl;
 class NominalTypeDecl;
 class GenericTypeDecl;
+class HiddenTypeLayoutInfoDecl;
 enum class EffectKind : uint8_t;
 class EnumDecl;
 class EnumElementDecl;
@@ -1728,6 +1729,29 @@ public:
   }
 };
 DEFINE_EMPTY_CAN_TYPE_WRAPPER(ErrorType, Type)
+
+/// HiddenTypeLayoutInfoType - Represents a type whose actual definition is hidden
+/// (e.g., from an @_implementationOnly import) but whose layout information
+/// is available for code generation purposes.
+class HiddenTypeLayoutInfoType : public TypeBase {
+  friend class ASTContext;
+
+  HiddenTypeLayoutInfoDecl *Decl;
+
+  HiddenTypeLayoutInfoType(HiddenTypeLayoutInfoDecl *decl, const ASTContext &ctx,
+                   RecursiveTypeProperties properties)
+      : TypeBase(TypeKind::HiddenTypeLayoutInfo, &ctx, properties), Decl(decl) {}
+
+public:
+  static Type get(HiddenTypeLayoutInfoDecl *decl, const ASTContext &ctx);
+
+  HiddenTypeLayoutInfoDecl *getDecl() const { return Decl; }
+
+  static bool classof(const TypeBase *T) {
+    return T->getKind() == TypeKind::HiddenTypeLayoutInfo;
+  }
+};
+DEFINE_EMPTY_CAN_TYPE_WRAPPER(HiddenTypeLayoutInfoType, Type)
   
 /// BuiltinType - An abstract class for all the builtin types.
 class BuiltinType : public TypeBase {

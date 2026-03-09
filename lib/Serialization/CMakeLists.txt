@@ -1,4 +1,3 @@
-
 add_swift_host_library(swiftSerialization STATIC
   Deserialization.cpp
   DeserializeSIL.cpp

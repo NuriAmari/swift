@@ -18,6 +18,7 @@
 #define SWIFT_IRGEN_GENCLASS_H
 
 #include "swift/AST/Types.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ArrayRef.h"
 
@@ -232,6 +233,11 @@ namespace irgen {
   /// Is the given class-like type known to have Swift-compatible
   /// metadata?
   bool hasKnownSwiftMetadata(IRGenModule &IGM, CanType theType);
+
+  /// Create TypeInfo for a hidden reference type from serialized ABI info.
+  const TypeInfo *createReferenceTypeInfoFromABIInfo(
+      IRGenModule &IGM,
+      const HiddenReferenceTypeIRABIInfo &abiInfo);
 
 } // end namespace irgen
 } // end namespace swift

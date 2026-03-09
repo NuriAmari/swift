@@ -1955,6 +1955,8 @@ private:
     switch (BaseTy->getKind()) {
     case TypeKind::BuiltinUnboundGeneric:
       llvm_unreachable("not a real type");
+    case TypeKind::HiddenTypeLayoutInfo:
+      llvm_unreachable("HiddenTypeLayoutInfoType should not make it to IRGen");
 
     case TypeKind::BuiltinBorrow: {
       llvm_unreachable("todo");

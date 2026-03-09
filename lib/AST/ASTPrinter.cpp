@@ -5213,6 +5213,10 @@ void CustomAttr::printCustomAttr(ASTPrinter &Printer, const PrintOptions &Option
   }
 }
 
+void PrintAST::visitHiddenTypeLayoutInfoDecl(HiddenTypeLayoutInfoDecl *decl) {
+  Printer << "/* hidden type layout */";
+}
+
 void PrintAST::visitIntegerLiteralExpr(IntegerLiteralExpr *expr) {
   Printer << expr->getDigitsText();
 }
@@ -6631,6 +6635,11 @@ public:
     } else {
       Printer << "_";
     }
+  }
+
+  void visitHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *T,
+                             NonRecursivePrintOptions nrOptions) {
+    Printer << "<<hidden layout type>>";
   }
 
   void visitErrorUnionType(ErrorUnionType *T,

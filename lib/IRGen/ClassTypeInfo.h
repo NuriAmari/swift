@@ -19,6 +19,7 @@
 
 #include "ClassLayout.h"
 #include "HeapTypeInfo.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 
 #include "swift/ClangImporter/ClangImporterRequests.h"
 
@@ -159,6 +160,12 @@ public:
     }
 
     HeapTypeInfo::strongRelease(IGF, e, atomicity);
+  }
+
+  void dump() const override { llvm::errs() << "ClassTypeInfo\n"; }
+
+  HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+    return new (ctx) HiddenReferenceTypeIRABIInfo(getReferenceCounting());
   }
 };
 

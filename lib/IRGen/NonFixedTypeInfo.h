@@ -206,6 +206,8 @@ public:
                                         bool useStructLayouts) const override {
     return IGM.typeLayoutCache.getOrCreateArchetypeEntry(T.getObjectType());
   }
+
+  void dump() const override { llvm::errs() << "BitwiseCopyableTypeInfo\n"; }
 };
 }
 }

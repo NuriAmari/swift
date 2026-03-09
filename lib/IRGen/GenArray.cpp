@@ -490,6 +490,8 @@ public:
                                Size(offset.getValue() + eltByteOffset));
     });
   }
+
+  void dump() const override { llvm::errs() << "LoadableArrayTypeInfo\n"; }
 };
 
 class FixedArrayTypeInfo final
@@ -510,6 +512,8 @@ public:
                        elementTI.isABIAccessible())
   {
   }
+
+  void dump() const override { llvm::errs() << "FixedArrayTypeInfo\n"; }
 };
 
 // NOTE: This does not simply use WitnessSizedTypeInfo in order to avoid
@@ -707,6 +711,8 @@ public:
                                           getElementSILType(IGF.IGM, arrayType),
                                           isOutlined);
   }
+
+  void dump() const override { llvm::errs() << "NonFixedArrayTypeInfo\n"; }
 };
 
 const TypeInfo *

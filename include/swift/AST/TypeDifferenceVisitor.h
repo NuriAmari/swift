@@ -412,6 +412,11 @@ public:
     return false;
   }
 
+  bool visitHiddenTypeLayoutInfoType(CanHiddenTypeLayoutInfoType type1,
+                                     CanHiddenTypeLayoutInfoType type2) {
+    llvm_unreachable("HiddenTypeLayoutInfoType difference semantics not yet determined");
+  }
+
   bool visitIntegerType(CanIntegerType type1, CanIntegerType type2) {
     return asImpl().visitDifferentTypeStructure(type1, type2);
   }

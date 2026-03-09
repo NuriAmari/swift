@@ -105,6 +105,8 @@ public:
     dest = projectFirstElement(IGF, dest);
     storeHeapObjectExtraInhabitant(IGF, index, dest);
   }
+
+  void dump() const override { llvm::errs() << "IntegerLiteralTypeInfo\n"; }
 };
 
 }

@@ -203,6 +203,8 @@ namespace {
     ReferenceCounting getReferenceCounting() const {
       return ReferenceCounting::Unknown;
     }
+
+    void dump() const override { llvm::errs() << "UnknownTypeInfo\n"; }
   };
 } // end anonymous namespace
 
@@ -232,6 +234,8 @@ namespace {
     ReferenceCounting getReferenceCounting() const {
       return ReferenceCounting::Bridge;
     }
+
+    void dump() const override { llvm::errs() << "BridgeObjectTypeInfo\n"; }
   };
 } // end anonymous namespace
 

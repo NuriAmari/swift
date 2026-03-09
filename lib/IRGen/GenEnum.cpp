@@ -6720,6 +6720,8 @@ namespace {
       : FixedEnumTypeInfoBase(strategy, T, S, std::move(SB), A,
                               isTriviallyDestroyable, isBT, copyable,
                               alwaysFixedSize, isABIAccessible) {}
+
+    void dump() const override { llvm::errs() << "FixedEnumTypeInfo\n"; }
   };
 
   /// TypeInfo for loadable enum types.
@@ -6793,6 +6795,8 @@ namespace {
                                 SourceLoc loc, Address addr) const override {
       return LoadedRef(Strategy.loadRefcountedPtr(IGF, loc, addr), false);
     }
+
+    void dump() const override { llvm::errs() << "LoadableEnumTypeInfo\n"; }
   };
 
   /// TypeInfo for dynamically-sized enum types.
@@ -6808,6 +6812,8 @@ namespace {
                          IsCopyable_t copy,
                          IsABIAccessible_t abiAccessible)
       : EnumTypeInfoBase(strategy, irTy, align, pod, bt, copy, abiAccessible) {}
+
+    void dump() const override { llvm::errs() << "NonFixedEnumTypeInfo\n"; }
   };
 
   /// TypeInfo for dynamically-sized enum types.
@@ -6820,6 +6826,8 @@ namespace {
                           IsCopyable_t copyable,
                           IsABIAccessible_t abiAccessible)
       : EnumTypeInfoBase(strategy, irTy, copyable, abiAccessible) {}
+
+    void dump() const override { llvm::errs() << "ResilientEnumTypeInfo\n"; }
   };
 
   class BitwiseCopyableEnumTypeInfo
@@ -6828,6 +6836,8 @@ namespace {
     BitwiseCopyableEnumTypeInfo(EnumImplStrategy &strategy, llvm::Type *irTy,
                                 IsABIAccessible_t abiAccessible)
         : EnumTypeInfoBase(strategy, irTy, abiAccessible) {}
+
+    void dump() const override { llvm::errs() << "BitwiseCopyableEnumTypeInfo\n"; }
   };
 } // end anonymous namespace
 

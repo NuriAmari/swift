@@ -305,6 +305,9 @@ private:
   /// Identifiers referenced by this module.
   MutableArrayRef<SerializedIdentifier> Identifiers;
 
+  /// Hidden type layout info decls referenced by this module.
+  MutableArrayRef<Serialized<Decl*>> HiddenTypeLayoutInfoDecls;
+
   using SerializedDeclMembersTable =
       ModuleFileSharedCore::SerializedDeclMembersTable;
 
@@ -556,6 +559,12 @@ private:
   /// XREF_PATH_PIECE records.
   llvm::Expected<Decl *> resolveCrossReference(serialization::ModuleID MID,
                                                uint32_t pathLen);
+
+  /// Reads \p pathLen XREF path piece records from the cursor for a
+  /// hidden type whose module was not loaded, capturing the type path
+  /// pieces so they can be re-emitted during re-serialization.
+  void consumeHiddenTypeXRefPathPieces(
+      uint32_t pathLen, SmallVectorImpl<XRefTypePathPiece> &pieces);
 
   struct AccessorRecord {
     SmallVector<serialization::DeclID, 8> IDs;
@@ -1050,6 +1059,16 @@ public:
   getDeclChecked(
     serialization::DeclID DID,
     llvm::function_ref<bool(DeclAttributes)> matchAttributes = nullptr);
+
+  /// Returns a stub decl based on hidden type layout information.
+  ///
+  /// This is used when an XREF cannot be resolved (e.g., the referenced module
+  /// is not available) but we have serialized layout information that allows
+  /// clients to work with values of the type.
+  ///
+  /// \param DID The ID for the hidden type layout info record.
+  llvm::Expected<Decl *>
+  getHiddenTypeLayoutInfoDecl(serialization::DeclID DID);
 
   /// Returns the decl context with the given ID, deserializing it if needed.
   DeclContext *getDeclContext(serialization::DeclContextID DID);

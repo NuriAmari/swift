@@ -46,7 +46,11 @@ static bool requiresHeapHeader(LayoutKind kind) {
 StructLayout::StructLayout(IRGenModule &IGM, std::optional<CanType> type,
                            LayoutKind layoutKind, LayoutStrategy strategy,
                            ArrayRef<const TypeInfo *> types,
-                           llvm::StructType *typeToFill) {
+                           llvm::StructType *typeToFill,
+                            IsTriviallyDestroyable_t isTriviallyDestroyableDefaultValue,
+                            IsCopyable_t isCopyableDefaultValue,
+                            IsBitwiseTakable_t isBitwiseTakableDefaultValue
+                           ) {
   NominalTypeDecl *decl = nullptr;
 
   if (type) {
@@ -68,15 +72,21 @@ StructLayout::StructLayout(IRGenModule &IGM, std::optional<CanType> type,
     builder.addHeapHeader();
   }
 
-  auto triviallyDestroyable = (decl && decl->getValueTypeDestructor())
-    ? IsNotTriviallyDestroyable : IsTriviallyDestroyable;
-  auto copyable = (decl && !decl->canBeCopyable())
-    ? IsNotCopyable : IsCopyable;
-  IsBitwiseTakable_t bitwiseTakable = IsBitwiseTakableAndBorrowable;
+  auto triviallyDestroyable = isTriviallyDestroyableDefaultValue;
+  auto copyable = isCopyableDefaultValue;
+  auto bitwiseTakable = isBitwiseTakableDefaultValue;
 
-  if (decl && decl->getAttrs().hasAttribute<SensitiveAttr>()) {
-    triviallyDestroyable = IsNotTriviallyDestroyable;
-    bitwiseTakable = IsNotBitwiseTakable;
+  if (decl) {
+    if (decl->getValueTypeDestructor())
+      triviallyDestroyable = IsNotTriviallyDestroyable;
+
+    if (!decl->canBeCopyable())
+      copyable = IsNotCopyable;
+
+    if (decl->getAttrs().hasAttribute<SensitiveAttr>()) {
+      triviallyDestroyable = IsNotTriviallyDestroyable;
+      bitwiseTakable = IsNotBitwiseTakable;
+    }
   }
 
   // Handle a raw layout specification on a struct.

@@ -58,6 +58,8 @@
 #include "swift/Frontend/ModuleInterfaceLoader.h"
 #include "swift/Serialization/Serialization.h"
 #include "swift/Serialization/SerializationOptions.h"
+#include "swift/IRGen/IRABIDetailsProvider.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/Strings.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -640,7 +642,7 @@ DeclContextID Serializer::addDeclContextRef(const DeclContext *DC) {
 
 DeclID Serializer::addDeclRef(const Decl *D, bool allowTypeAliasXRef) {
   assert((!D || !isDeclXRef(D) || isa<ValueDecl>(D) || isa<OperatorDecl>(D) ||
-          isa<PrecedenceGroupDecl>(D)) &&
+          isa<PrecedenceGroupDecl>(D) || isa<HiddenTypeLayoutInfoDecl>(D)) &&
          "cannot cross-reference this decl");
 
   assert((!D || allowTypeAliasXRef || !isa<TypeAliasDecl>(D) ||
@@ -2267,6 +2269,9 @@ static bool shouldSerializeMember(Decl *D) {
   case DeclKind::BuiltinTuple:
     llvm_unreachable("BuiltinTupleDecl should not show up here");
 
+  case DeclKind::HiddenTypeLayoutInfo:
+    llvm_unreachable("hidden type layout decls do not appear in the source themselves, they represent the layout of other decls that do");
+
   case DeclKind::EnumCase:
   case DeclKind::Macro:
   case DeclKind::MacroExpansion:
@@ -2358,7 +2363,7 @@ static Identifier getClangTemplateSpecializationXRefDiscriminator(
   return ctx.getIdentifier(buffer.str());
 }
 
-void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
+void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen, DeclID localRepresentationDeclID) {
   using namespace decls_block;
 
   unsigned abbrCode;
@@ -2382,13 +2387,14 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     abbrCode = DeclTypeAbbrCodes[XRefLayout::Code];
     XRefLayout::emitRecord(Out, ScratchRecord, abbrCode,
                            addContainingModuleRef(DC, /*ignoreExport=*/true),
+                           localRepresentationDeclID,
                            pathLen);
     break;
 
   case DeclContextKind::GenericTypeDecl: {
     auto generic = cast<GenericTypeDecl>(DC);
 
-    writeCrossReference(DC->getParent(), pathLen + 1);
+    writeCrossReference(DC->getParent(), pathLen + 1, localRepresentationDeclID);
 
     // Opaque return types are unnamed and need a special xref.
     if (auto opaque = dyn_cast<OpaqueTypeDecl>(generic)) {
@@ -2434,7 +2440,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     auto ext = cast<ExtensionDecl>(DC);
     auto nominal = ext->getExtendedNominal();
     assert(nominal);
-    writeCrossReference(nominal, pathLen + 1);
+    writeCrossReference(nominal, pathLen + 1, localRepresentationDeclID);
 
     abbrCode = DeclTypeAbbrCodes[XRefExtensionPathPieceLayout::Code];
     CanGenericSignature genericSig(nullptr);
@@ -2450,7 +2456,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
 
   case DeclContextKind::SubscriptDecl: {
     auto SD = cast<SubscriptDecl>(DC);
-    writeCrossReference(DC->getParent(), pathLen + 1);
+    writeCrossReference(DC->getParent(), pathLen + 1, localRepresentationDeclID);
 
     Type ty = SD->getInterfaceType()->getCanonicalType();
 
@@ -2466,7 +2472,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
   case DeclContextKind::AbstractFunctionDecl: {
     if (auto fn = dyn_cast<AccessorDecl>(DC)) {
       auto storage = fn->getStorage();
-      writeCrossReference(storage->getDeclContext(), pathLen + 2);
+      writeCrossReference(storage->getDeclContext(), pathLen + 2, localRepresentationDeclID);
 
       Type ty = storage->getInterfaceType()->getCanonicalType();
       IdentifierID nameID = addDeclBaseNameRef(storage->getBaseName());
@@ -2491,7 +2497,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
     }
 
     auto fn = cast<AbstractFunctionDecl>(DC);
-    writeCrossReference(DC->getParent(), pathLen + 1 + fn->isOperator());
+    writeCrossReference(DC->getParent(), pathLen + 1 + fn->isOperator(), localRepresentationDeclID);
 
     Type ty = fn->getInterfaceType()->getCanonicalType();
 
@@ -2530,7 +2536,7 @@ void Serializer::writeCrossReference(const DeclContext *DC, uint32_t pathLen) {
   }
 }
 
-void Serializer::writeCrossReference(const Decl *D) {
+void Serializer::writeCrossReference(const Decl *D, DeclID localRepresentationDeclID) {
   using namespace decls_block;
 
   unsigned abbrCode;
@@ -2538,7 +2544,7 @@ void Serializer::writeCrossReference(const Decl *D) {
   llvm::SaveAndRestore<const Decl *> SaveDecl(crossReferencedDecl, D);
 
   if (auto op = dyn_cast<OperatorDecl>(D)) {
-    writeCrossReference(op->getDeclContext(), 1);
+    writeCrossReference(op->getDeclContext(), 1, localRepresentationDeclID);
 
     abbrCode = DeclTypeAbbrCodes[XRefOperatorOrAccessorPathPieceLayout::Code];
     auto nameID = addDeclBaseNameRef(op->getName());
@@ -2550,7 +2556,7 @@ void Serializer::writeCrossReference(const Decl *D) {
   }
 
   if (auto prec = dyn_cast<PrecedenceGroupDecl>(D)) {
-    writeCrossReference(prec->getDeclContext(), 1);
+    writeCrossReference(prec->getDeclContext(), 1, localRepresentationDeclID);
 
     abbrCode = DeclTypeAbbrCodes[XRefOperatorOrAccessorPathPieceLayout::Code];
     auto nameID = addDeclBaseNameRef(prec->getName());
@@ -2563,11 +2569,11 @@ void Serializer::writeCrossReference(const Decl *D) {
 
   if (auto fn = dyn_cast<AbstractFunctionDecl>(D)) {
     // Functions are special because they might be operators.
-    writeCrossReference(fn, 0);
+    writeCrossReference(fn, 0, localRepresentationDeclID);
     return;
   }
 
-  writeCrossReference(D->getDeclContext());
+  writeCrossReference(D->getDeclContext(), 1, localRepresentationDeclID);
 
   if (auto opaque = dyn_cast<OpaqueTypeDecl>(D)) {
     abbrCode = DeclTypeAbbrCodes[XRefOpaqueReturnTypePathPieceLayout::Code];
@@ -2621,6 +2627,27 @@ void Serializer::writeCrossReference(const Decl *D) {
   XRefValuePathPieceLayout::emitRecord(Out, ScratchRecord, abbrCode,
                                        addTypeRef(ty), iid, isProtocolExt,
                                        D->hasClangNode(), val->isStatic());
+}
+
+void Serializer::writeHiddenTypeXRef(
+    const HiddenTypeLayoutInfoDecl *hidden,
+    DeclID localRepresentationDeclID) {
+  using namespace decls_block;
+  auto path = hidden->getOriginalXRefPath();
+
+  unsigned abbrCode = DeclTypeAbbrCodes[XRefLayout::Code];
+  XRefLayout::emitRecord(Out, ScratchRecord, abbrCode,
+                         addDeclBaseNameRef(hidden->getOriginalModuleName()),
+                         localRepresentationDeclID,
+                         /*pathLen=*/path.size());
+
+  abbrCode = DeclTypeAbbrCodes[XRefTypePathPieceLayout::Code];
+  for (auto &piece : path) {
+    XRefTypePathPieceLayout::emitRecord(
+        Out, ScratchRecord, abbrCode, addDeclBaseNameRef(piece.Name),
+        addDeclBaseNameRef(piece.PrivateDiscriminator), piece.InProtocolExt,
+        piece.ImportedFromClang);
+  }
 }
 
 /// Translate from the AST associativity enum to the Serialization enum
@@ -5457,6 +5484,245 @@ public:
   void visitBuiltinTupleDecl(const BuiltinTupleDecl *) {
     llvm_unreachable("BuiltinTupleDecl are not serialized");
   }
+
+  void visitHiddenTypeLayoutInfoDecl(const HiddenTypeLayoutInfoDecl *) {
+    // writeASTBlockEntity handles HiddenTypeLayoutInfoDecl specially,
+    // emitting an XREF before reaching DeclSerializer.
+    llvm_unreachable("should be handled by writeASTBlockEntity");
+  }
+};
+
+/// This visitor serializes layout information about implementationOnly
+/// types such that clients of the module can correctly manipulate instances
+/// of the type without being provided the full type definition.
+class Serializer::HiddenDeclSerializer
+    : public DeclVisitor<HiddenDeclSerializer> {
+  Serializer &S;
+
+  /// Checks if a nominal type needs hidden type layout information and
+  /// adds it to the worklist if so. This enables transitive serialization
+  /// of hidden type layout for nested types.
+  void addHiddenLayoutIfNeeded(NominalTypeDecl *nominal) {
+    if (!nominal)
+      return;
+    ModuleDecl *typeModule = nominal->getModuleContext();
+    if (S.M->isImportedImplementationOnly(typeModule)) {
+      S.DeclsToSerializeHiddenTypeLayoutInformationFor.addRef(nominal);
+    }
+  }
+
+  /// Writes hidden type layout for a value type (struct/enum).
+  void writeTypeLayoutForStruct(const StructDecl *structDecl) {
+    using namespace decls_block;
+
+    auto *provider = S.getLayoutProvider();
+    if (!provider)
+      return;
+
+    auto *abiInfo = provider->getHiddenTypeIRABIInfo(structDecl);
+    if (!abiInfo)
+      return;
+
+    if (auto *loadableInfo =
+            llvm::dyn_cast<irgen::LoadableHiddenStructTypeIRABIInfo>(abiInfo)) {
+      // Collect field type IDs and transitively add hidden layout
+      // for any types from @_implementationOnly modules
+      SmallVector<TypeID, 4> fieldTypeIDs;
+      for (auto fieldType : loadableInfo->getFieldTypes()) {
+        // It is important that use a TypeID that refers to the original type
+        // rather than a hidden represenation, so that we give clients
+        // an opportunity to recover the original type if they so happen
+        // to import it, and the hidden version is only used as a fallback.
+        fieldTypeIDs.push_back(S.addTypeRef(fieldType));
+        if (auto *fieldNominal = fieldType->getAnyNominal()) {
+          addHiddenLayoutIfNeeded(fieldNominal);
+        }
+      }
+
+      uint8_t kind = static_cast<uint8_t>(
+          irgen::HiddenTypeIRABIInfo::Kind::LoadableStruct);
+
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes[HiddenLoadableStructTypeLayoutDescriptorLayout::Code];
+      HiddenLoadableStructTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode,
+          kind,
+          loadableInfo->getSize(),
+          loadableInfo->getAlignment(),
+          loadableInfo->getExplosionSize(),
+          loadableInfo->isTriviallyDestroyable(),
+          loadableInfo->isBitwiseTakable(),
+          loadableInfo->isCopyable(),
+          loadableInfo->isFixedSize(),
+          loadableInfo->isABIAccessible(),
+          loadableInfo->getSILTypeProperties().getRawFlags(),
+          fieldTypeIDs);
+    } else if (auto *resilientInfo =
+                   llvm::dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(
+                       abiInfo)) {
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes
+              [HiddenResilientStructTypeLayoutDescriptorLayout::Code];
+      HiddenResilientStructTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode,
+          resilientInfo->isCopyable(),
+          resilientInfo->isABIAccessible(),
+          resilientInfo->getSILTypeProperties().getRawFlags(),
+          resilientInfo->getMetadataAccessorName());
+    } else if (auto *addressOnlyInfo =
+                   llvm::dyn_cast<irgen::AddressOnlyHiddenStructTypeIRABIInfo>(
+                       abiInfo)) {
+      SmallVector<TypeID, 4> fieldTypeIDs;
+      for (auto fieldType : addressOnlyInfo->getFieldTypes()) {
+        fieldTypeIDs.push_back(S.addTypeRef(fieldType));
+        if (auto *fieldNominal = fieldType->getAnyNominal()) {
+          addHiddenLayoutIfNeeded(fieldNominal);
+        }
+      }
+
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes
+              [HiddenAddressOnlyStructTypeLayoutDescriptorLayout::Code];
+      HiddenAddressOnlyStructTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode,
+          addressOnlyInfo->getSize(),
+          addressOnlyInfo->getAlignment(),
+          addressOnlyInfo->isTriviallyDestroyable(),
+          addressOnlyInfo->isBitwiseTakable(),
+          addressOnlyInfo->isCopyable(),
+          addressOnlyInfo->isFixedSize(),
+          addressOnlyInfo->isABIAccessible(),
+          addressOnlyInfo->getSILTypeProperties().getRawFlags(),
+          fieldTypeIDs);
+    }
+  }
+
+  void writeTypeLayoutForClass(const ClassDecl *classDecl) {
+    using namespace decls_block;
+
+    auto *provider = S.getLayoutProvider();
+    if (!provider)
+      return;
+
+    auto *abiInfo = provider->getHiddenTypeIRABIInfo(classDecl);
+    if (!abiInfo)
+      return;
+
+    if (auto *refInfo =
+            llvm::dyn_cast<irgen::HiddenReferenceTypeIRABIInfo>(abiInfo)) {
+      uint8_t refcounting = static_cast<uint8_t>(refInfo->getReferenceCounting());
+
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes[HiddenReferenceTypeLayoutDescriptorLayout::Code];
+      HiddenReferenceTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, refcounting);
+    }
+  }
+
+public:
+  HiddenDeclSerializer(Serializer &S) : S(S) {}
+
+  void visit(const Decl *D) {
+    DeclVisitor<HiddenDeclSerializer>::visit(const_cast<Decl *>(D));
+  }
+
+  void visitDecl(const Decl *D) {
+    D->dump(llvm::errs());
+    llvm_unreachable("unhandled decl kind in HiddenDeclSerializer");
+  }
+
+  void visitStructDecl(const StructDecl *structDecl) {
+    writeTypeLayoutForStruct(structDecl);
+  }
+
+  void visitClassDecl(const ClassDecl *classDecl) {
+    writeTypeLayoutForClass(classDecl);
+  }
+
+  void visitHiddenTypeLayoutInfoDecl(
+      const HiddenTypeLayoutInfoDecl *decl) {
+    using namespace decls_block;
+
+    // Re-serialize from the already-materialized ABI info.
+    auto *abiInfo = decl->getABIInfo();
+    if (!abiInfo)
+      return;
+
+    if (auto *loadableInfo =
+            llvm::dyn_cast<irgen::LoadableHiddenStructTypeIRABIInfo>(abiInfo)) {
+      SmallVector<TypeID, 4> fieldTypeIDs;
+      for (auto fieldType : loadableInfo->getFieldTypes()) {
+        fieldTypeIDs.push_back(S.addTypeRef(fieldType));
+        // Transitively add hidden layout for field types that are
+        // themselves hidden types.
+        if (auto *hidden = fieldType->getAs<HiddenTypeLayoutInfoType>()) {
+          S.DeclsToSerializeHiddenTypeLayoutInformationFor.addRef(
+              hidden->getDecl());
+        }
+      }
+
+      uint8_t kind = static_cast<uint8_t>(
+          irgen::HiddenTypeIRABIInfo::Kind::LoadableStruct);
+
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes[HiddenLoadableStructTypeLayoutDescriptorLayout::Code];
+      HiddenLoadableStructTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, kind, loadableInfo->getSize(),
+          loadableInfo->getAlignment(), loadableInfo->getExplosionSize(),
+          loadableInfo->isTriviallyDestroyable(),
+          loadableInfo->isBitwiseTakable(), loadableInfo->isCopyable(),
+          loadableInfo->isFixedSize(), loadableInfo->isABIAccessible(),
+          loadableInfo->getSILTypeProperties().getRawFlags(),
+          fieldTypeIDs);
+    } else if (auto *refInfo =
+            llvm::dyn_cast<irgen::HiddenReferenceTypeIRABIInfo>(abiInfo)) {
+      uint8_t refcounting =
+          static_cast<uint8_t>(refInfo->getReferenceCounting());
+
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes[HiddenReferenceTypeLayoutDescriptorLayout::Code];
+      HiddenReferenceTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode, refcounting);
+    } else if (auto *resilientInfo =
+                   llvm::dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(
+                       abiInfo)) {
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes
+              [HiddenResilientStructTypeLayoutDescriptorLayout::Code];
+      HiddenResilientStructTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode,
+          resilientInfo->isCopyable(),
+          resilientInfo->isABIAccessible(),
+          resilientInfo->getSILTypeProperties().getRawFlags(),
+          resilientInfo->getMetadataAccessorName());
+    } else if (auto *addressOnlyInfo =
+                   llvm::dyn_cast<irgen::AddressOnlyHiddenStructTypeIRABIInfo>(
+                       abiInfo)) {
+      SmallVector<TypeID, 4> fieldTypeIDs;
+      for (auto fieldType : addressOnlyInfo->getFieldTypes()) {
+        fieldTypeIDs.push_back(S.addTypeRef(fieldType));
+        if (auto *hidden = fieldType->getAs<HiddenTypeLayoutInfoType>()) {
+          S.DeclsToSerializeHiddenTypeLayoutInformationFor.addRef(
+              hidden->getDecl());
+        }
+      }
+
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes
+              [HiddenAddressOnlyStructTypeLayoutDescriptorLayout::Code];
+      HiddenAddressOnlyStructTypeLayoutDescriptorLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode,
+          addressOnlyInfo->getSize(),
+          addressOnlyInfo->getAlignment(),
+          addressOnlyInfo->isTriviallyDestroyable(),
+          addressOnlyInfo->isBitwiseTakable(),
+          addressOnlyInfo->isCopyable(),
+          addressOnlyInfo->isFixedSize(),
+          addressOnlyInfo->isABIAccessible(),
+          addressOnlyInfo->getSILTypeProperties().getRawFlags(),
+          fieldTypeIDs);
+    }
+  }
 };
 
 /// When allowing modules with errors there may be cases where there's little
@@ -5515,8 +5781,27 @@ void Serializer::writeASTBlockEntity(const Decl *D) {
     }
   };
 
+  // HiddenTypeLayoutInfoDecl is a synthetic local decl that represents a
+  // hidden type from an unavailable module. During re-serialization, we
+  // emit an XREF to the original type with a localRepresentationDeclID
+  // pointing to re-serialized ABI info. This enables hidden type "recovery"
+  // a client will be able to resolve the XREF to the full type if provided
+  // the defining module.
+  if (auto *hidden = dyn_cast<HiddenTypeLayoutInfoDecl>(D)) {
+    if (hidden->hasOriginalXRefInfo()) {
+      DeclID localRepID =
+          DeclsToSerializeHiddenTypeLayoutInformationFor.addRef(hidden);
+      writeHiddenTypeXRef(hidden, localRepID);
+      return;
+    }
+  }
+
   if (isDeclXRef(D)) {
-    writeCrossReference(D);
+    DeclID localRepresentationDeclID = 0;
+    if (DeclsToSerializeHiddenTypeLayoutInformationFor.hasRef(D)) {
+      localRepresentationDeclID = DeclsToSerializeHiddenTypeLayoutInformationFor.addRef(D);
+    }
+    writeCrossReference(D, localRepresentationDeclID);
     return;
   }
 
@@ -5750,6 +6035,17 @@ public:
       return;
     }
     llvm_unreachable("should not serialize an ErrorType");
+  }
+
+
+  void visitHiddenTypeLayoutInfoType(const HiddenTypeLayoutInfoType *ty) {
+    using namespace decls_block;
+    auto *hidden = ty->getDecl();
+    unsigned abbrCode = S.DeclTypeAbbrCodes[NominalTypeLayout::Code];
+    NominalTypeLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
+                                  S.addDeclRef(hidden),
+                                  // TODO: Convince ourselves it is ok not to have a parent type
+                                  /*parent*/ S.addTypeRef(Type()));
   }
 
   void visitPlaceholderType(const PlaceholderType *) {
@@ -6662,6 +6958,11 @@ void Serializer::writeAllDeclsAndTypes() {
 
   registerDeclTypeAbbr<InheritedProtocolsLayout>();
 
+  registerDeclTypeAbbr<HiddenLoadableStructTypeLayoutDescriptorLayout>();
+  registerDeclTypeAbbr<HiddenReferenceTypeLayoutDescriptorLayout>();
+  registerDeclTypeAbbr<HiddenResilientStructTypeLayoutDescriptorLayout>();
+  registerDeclTypeAbbr<HiddenAddressOnlyStructTypeLayoutDescriptorLayout>();
+
 #define DECL_ATTR(X, NAME, ...) \
   registerDeclTypeAbbr<NAME##DeclAttrLayout>();
 #include "swift/AST/DeclAttr.def"
@@ -6690,6 +6991,10 @@ void Serializer::writeAllDeclsAndTypes() {
     wroteSomething |=
         writeASTBlockEntitiesIfNeeded(PackConformancesToSerialize);
     wroteSomething |= writeASTBlockEntitiesIfNeeded(SILLayoutsToSerialize);
+
+    // Hidden type layout information may reference types that need to be
+    // serialized, so include it in the fixed-point iteration.
+    wroteSomething |= writeHiddenTypeLayoutInformationIfNeeded();
   } while (wroteSomething);
 }
 
@@ -6714,6 +7019,23 @@ std::vector<CharOffset> Serializer::writeAllIdentifiers() {
 
   IdentifierData.emit(ScratchRecord, stringData.str());
   return identifierOffsets;
+}
+
+bool Serializer::writeHiddenTypeLayoutInformationIfNeeded() {
+  if (!DeclsToSerializeHiddenTypeLayoutInformationFor.hasMoreToSerialize())
+    return false;
+  while (auto next = DeclsToSerializeHiddenTypeLayoutInformationFor.popNext(Out.GetCurrentBitNo()))
+    writeHiddenLayoutInformationForDecl(next.value());
+  return true;
+}
+
+IRABIDetailsProvider *Serializer::getLayoutProvider() const {
+  return LayoutProvider.get();
+}
+
+
+void Serializer::writeHiddenLayoutInformationForDecl(const Decl* D) {
+  HiddenDeclSerializer(*this).visit(D);
 }
 
 template <typename SpecificASTBlockRecordKeeper>
@@ -7294,6 +7616,37 @@ void Serializer::writeAST(ModuleOrSourceFile DC) {
     }
   }
 
+  const auto collectDeclarationsToEmitHiddenTypeLayoutDescriptorsFor = [&]() {
+    for (auto nextFile : files) {
+      SmallVector<Decl *, 32> fileDecls;
+      nextFile->getTopLevelDeclsWithAuxiliaryDecls(fileDecls);
+
+      for (auto D : fileDecls) {
+        auto *structDecl = dyn_cast<StructDecl>(D);
+        if (!structDecl || structDecl->getFormalAccess() < swift::AccessLevel::Public)
+          continue;
+
+        for (auto *member : structDecl->getAllMembers()) {
+          auto *var = dyn_cast<VarDecl>(member);
+          if (!var || !var->hasStorage() || var->isStatic())
+            continue;
+
+          Type ty = var->getInterfaceType();
+          if (auto *nominal = ty->getAnyNominal()) {
+            ModuleDecl *typeModule = nominal->getModuleContext();
+            if (M->isImportedImplementationOnly(typeModule)) {
+              DeclsToSerializeHiddenTypeLayoutInformationFor.addRef(nominal);
+              // TODO: We also need to collect nested struct types whose fields
+              // may themselves contain hidden types, so that their layout
+              // information is transitively available to clients.
+            }
+          }
+        }
+      }
+    }
+  };
+  collectDeclarationsToEmitHiddenTypeLayoutDescriptorsFor();
+
   writeAllDeclsAndTypes();
   std::vector<CharOffset> identifierOffsets = writeAllIdentifiers();
 
@@ -7312,6 +7665,7 @@ void Serializer::writeAST(ModuleOrSourceFile DC) {
     writeOffsets(Offsets, AbstractConformancesToSerialize);
     writeOffsets(Offsets, PackConformancesToSerialize);
     writeOffsets(Offsets, SILLayoutsToSerialize);
+    writeOffsets(Offsets, DeclsToSerializeHiddenTypeLayoutInformationFor);
 
     Offsets.emit(ScratchRecord, index_block::IDENTIFIER_OFFSETS,
                  identifierOffsets);

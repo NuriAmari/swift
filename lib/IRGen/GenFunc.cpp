@@ -237,6 +237,13 @@ namespace {
       tmp.add(fn);
       PODSingleScalarTypeInfo<ThinFuncTypeInfo,LoadableTypeInfo>::initialize(IGF, tmp, addr, isOutlined);
     }
+
+    void dump() const override { llvm::errs() << "ThinFuncTypeInfo\n"; }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("thin function types cannot be hidden behind "
+                       "@_implementationOnly imports");
+    }
   };
 
   /// The (objc_method) function type-info class.
@@ -257,6 +264,13 @@ namespace {
                                           const SpareBitVector &spareBits) {
       return new ObjCFuncTypeInfo(formalType, storageType, size, align,
                                   spareBits);
+    }
+
+    void dump() const override { llvm::errs() << "ObjCFuncTypeInfo\n"; }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("ObjC function types cannot be hidden behind "
+                       "@_implementationOnly imports");
     }
   };
 
@@ -463,6 +477,8 @@ namespace {
       mask.appendClearBits(pointerSize.getValueInBits());
       return mask.build().value();
     }
+
+    void dump() const override { llvm::errs() << "FuncTypeInfo\n"; }
   };
 
   /// The type-info class for ObjC blocks, which are represented by an ObjC
@@ -491,6 +507,8 @@ namespace {
       return IGM.typeLayoutCache.getOrCreateScalarEntry(
           *this, T, ScalarKind::BlockReference);
     }
+
+    void dump() const override { llvm::errs() << "BlockTypeInfo\n"; }
   };
   
   /// The type info class for the on-stack representation of an ObjC block.
@@ -548,6 +566,8 @@ namespace {
                  bool isOutlined) const override {
       IGF.unimplemented(SourceLoc(), "destroying @block_storage");
     }
+
+    void dump() const override { llvm::errs() << "BlockStorageTypeInfo\n"; }
   };
 } // end anonymous namespace
 

@@ -17,6 +17,8 @@
 #ifndef SWIFT_IRGEN_GENSTRUCT_H
 #define SWIFT_IRGEN_GENSTRUCT_H
 
+#include "swift/AST/Types.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include <optional>
 
 namespace llvm {
@@ -71,6 +73,28 @@ namespace irgen {
   std::optional<unsigned> getPhysicalStructFieldIndex(IRGenModule &IGM,
                                                       SILType baseType,
                                                       VarDecl *field);
+
+  /// Create TypeInfo for a hidden value type from serialized ABI info.
+  /// Lowers field types, runs StructLayout, and directly constructs
+  /// a HiddenLoadableStructTypeInfo.
+  const TypeInfo *createTypeInfoFromABIInfo(IRGenModule &IGM,
+                                            CanHiddenTypeLayoutInfoType type,
+                                            const LoadableHiddenStructTypeIRABIInfo &abiInfo);
+
+  /// Create TypeInfo for a hidden resilient struct type from serialized
+  /// ABI info. Constructs a HiddenResilientStructTypeInfo that stores the
+  /// metadata accessor name for value witness calls.
+  const TypeInfo *createResilientTypeInfoFromABIInfo(
+      IRGenModule &IGM,
+      const HiddenResilientStructTypeIRABIInfo &abiInfo);
+
+  /// Create TypeInfo for a hidden fixed-size, address-only struct type
+  /// from serialized ABI info. Lowers field types, runs StructLayout, and
+  /// constructs a HiddenFixedStructTypeInfo.
+  const TypeInfo *createAddressOnlyTypeInfoFromABIInfo(
+      IRGenModule &IGM,
+      CanHiddenTypeLayoutInfoType type,
+      const AddressOnlyHiddenStructTypeIRABIInfo &abiInfo);
 } // end namespace irgen
 } // end namespace swift
 

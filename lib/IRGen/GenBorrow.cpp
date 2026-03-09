@@ -95,6 +95,8 @@ public:
     dest = IGF.Builder.CreateElementBitCast(dest, IGF.IGM.IntPtrTy);
     IGF.Builder.CreateStore(llvm::ConstantInt::get(IGF.IGM.IntPtrTy, 0),dest);
   }
+
+  void dump() const override { llvm::errs() << "BorrowByPointerTypeInfo\n"; }
 };
 
 // Type info for `Builtin.Borrow`s that are represented with an inline
@@ -237,6 +239,8 @@ public:
     return t->getSubclassKind()
       == (unsigned)BorrowTypeInfoSubclassKind::BorrowInline;
   }
+
+  void dump() const override { llvm::errs() << "BorrowInlineTypeInfo\n"; }
 };
 
 class BorrowNonFixedTypeInfo final
@@ -395,6 +399,8 @@ public:
 
     IGF.Builder.emitBlock(doneBB);
   }
+
+  void dump() const override { llvm::errs() << "BorrowNonFixedTypeInfo\n"; }
 };
 
 const TypeInfo *

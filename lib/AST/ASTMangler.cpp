@@ -1408,6 +1408,9 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
       appendOperator("Xe");
       return;
 
+    case TypeKind::HiddenTypeLayoutInfo:
+      llvm_unreachable("It is unclear what a useful mangling of a hidden layout type would look like");
+
       // We don't care about these types being a bit verbose because we
       // don't expect them to come up that often in API names.
     case TypeKind::BuiltinFloat:
@@ -5500,6 +5503,8 @@ ASTMangler::BaseEntitySignature::BaseEntitySignature(const Decl *decl)
     case DeclKind::PostfixOperator:
     case DeclKind::MacroExpansion:
     case DeclKind::Using:
+    // Synthetic decl with no generic signature, unclear what use mangling the type would have
+    case DeclKind::HiddenTypeLayoutInfo:
       break;
     };
   }

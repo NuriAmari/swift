@@ -66,6 +66,12 @@ namespace {
                           bool useStructLayouts) const override {
       return IGM.typeLayoutCache.getOrCreateResilientEntry(T);
     }
+
+    void dump() const override { llvm::errs() << "DynamicTupleTypeInfo\n"; }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("Tuples are represented in terms of the enclosed types and the tuple specific portion of that representation is the same if hidden types are involved or not, we don't need to convert to a separate hidden representation.");
+    }
   };
 } // end anonymous namespace
 
@@ -249,6 +255,10 @@ namespace {
         }
       }
     }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("Tuples are represented in terms of the enclosed types and the tuple specific portion of that representation is the same if hidden types are involved or not, we don't need to convert to a separate hidden representation.");
+    }
   };
 
   /// Type implementation for loadable tuples.
@@ -312,6 +322,8 @@ namespace {
     std::nullopt_t getNonFixedOffsets(IRGenFunction &IGF, SILType T) const {
       return std::nullopt;
     }
+
+    void dump() const override { llvm::errs() << "LoadableTupleTypeInfo\n"; }
   };
 
   /// Type implementation for fixed-size but non-loadable tuples.
@@ -367,6 +379,8 @@ namespace {
     std::nullopt_t getNonFixedOffsets(IRGenFunction &IGF, SILType T) const {
       return std::nullopt;
     }
+
+    void dump() const override { llvm::errs() << "FixedTupleTypeInfo\n"; }
   };
 
   /// An accessor for the non-fixed offsets for a tuple type.
@@ -458,6 +472,8 @@ namespace {
       emitStoreEnumTagSinglePayloadCall(IGF, structType, index,
                                         numEmptyCases, structAddr);
     }
+
+    void dump() const override { llvm::errs() << "NonFixedTupleTypeInfo\n"; }
   };
 
   class TupleTypeBuilder :

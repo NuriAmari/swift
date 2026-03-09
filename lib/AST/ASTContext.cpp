@@ -3739,6 +3739,15 @@ Type ErrorType::get(Type originalType) {
   return entry = new (mem) ErrorType(ctx, originalType);
 }
 
+Type HiddenTypeLayoutInfoType::get(HiddenTypeLayoutInfoDecl *decl, const ASTContext &ctx) {
+  // HiddenTypeLayoutInfoTypes participate minimally in typechecking; they
+  // exist to communicate ABI information for indirectly manipulating instances
+  // of the type. None of the special type properties should be relevant.
+  RecursiveTypeProperties properties;
+  return new (ctx, AllocationArena::Permanent)
+      HiddenTypeLayoutInfoType(decl, ctx, properties);
+}
+
 void ErrorUnionType::Profile(llvm::FoldingSetNodeID &id, ArrayRef<Type> terms) {
   id.AddInteger(terms.size());
   for (auto term : terms) {

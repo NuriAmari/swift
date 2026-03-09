@@ -113,6 +113,8 @@ public:
     IGF.Builder.CreateStore(llvm::ConstantInt::get(IGF.IGM.ExecutorSecondTy, 0),
                             second);
   }
+
+  void dump() const override { llvm::errs() << "ExecutorTypeInfo\n"; }
 };
 
 } // end anonymous namespace
@@ -1054,6 +1056,8 @@ public:
                             bool isOutlined) const override {
     llvm_unreachable("no extra inhabitants");
   }
+
+  void dump() const override { llvm::errs() << "ImplicitActorTypeInfo\n"; }
 };
 
 } // end anonymous namespace

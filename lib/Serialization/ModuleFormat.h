@@ -58,7 +58,8 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 987; // Serialize decl lifetimes instead of their their function types' lifetimes
+///
+const uint16_t SWIFTMODULE_VERSION_MINOR = 988; // encode information about leaking implementationOnly types
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -2213,6 +2214,7 @@ namespace decls_block {
   using XRefLayout = BCRecordLayout<
     XREF,
     ModuleIDField,  // base module ID
+    DeclIDField,    // local representation decl ID (0 if none)
     BCVBR<4>        // xref path length (cannot be 0)
   >;
 
@@ -2646,6 +2648,47 @@ namespace decls_block {
     BCFixed<2>  // mode
   >;
 
+  using HiddenLoadableStructTypeLayoutDescriptorLayout = BCRecordLayout<
+    HIDDEN_LOADABLE_STRUCT_TYPE,
+    BCFixed<8>,  // kind of HiddenTypeIRABIInfo
+    BCVBR<32>,   // size
+    BCVBR<8>,    // alignment
+    BCVBR<16>,   // explosionSize
+    BCFixed<1>,  // isTriviallyDestroyable
+    BCFixed<1>,  // isBitwiseTakable
+    BCFixed<1>,  // isCopyable
+    BCFixed<1>,  // isFixedSize
+    BCFixed<1>,  // isABIAccessible
+    BCVBR<16>,   // silTypePropertiesFlags
+    BCArray<TypeIDField> // field types
+  >;
+
+  using HiddenReferenceTypeLayoutDescriptorLayout = BCRecordLayout<
+    HIDDEN_REFERENCE_TYPE,
+    BCFixed<8>   // ReferenceCounting kind
+  >;
+
+  using HiddenResilientStructTypeLayoutDescriptorLayout = BCRecordLayout<
+    HIDDEN_RESILIENT_STRUCT_TYPE,
+    BCFixed<1>,   // isCopyable
+    BCFixed<1>,   // isABIAccessible
+    BCVBR<16>,    // silTypePropertiesFlags
+    BCBlob        // metadata accessor mangled name
+  >;
+
+  using HiddenAddressOnlyStructTypeLayoutDescriptorLayout = BCRecordLayout<
+    HIDDEN_ADDRESS_ONLY_STRUCT_TYPE,
+    BCVBR<32>,   // size
+    BCVBR<8>,    // alignment
+    BCFixed<1>,  // isTriviallyDestroyable
+    BCFixed<1>,  // isBitwiseTakable
+    BCFixed<1>,  // isCopyable
+    BCFixed<1>,  // isFixedSize
+    BCFixed<1>,  // isABIAccessible
+    BCVBR<16>,   // silTypePropertiesFlags
+    BCArray<TypeIDField> // field types
+  >;
+
   // clang-format on
 
 #undef SYNTAX_SUGAR_TYPE_LAYOUT
@@ -2748,7 +2791,9 @@ namespace index_block {
     SUBSTITUTION_MAP_OFFSETS,
     CLANG_TYPE_OFFSETS,
     EXPORTED_PRESPECIALIZATION_DECLS,
-    LastRecordKind = EXPORTED_PRESPECIALIZATION_DECLS,
+    
+    HIDDEN_TYPE_LAYOUT_INFORMATION_RECORD_OFFSETS,
+    LastRecordKind = HIDDEN_TYPE_LAYOUT_INFORMATION_RECORD_OFFSETS,
   };
 
   constexpr const unsigned RecordIDFieldWidth = 5;

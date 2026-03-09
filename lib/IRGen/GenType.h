@@ -186,6 +186,7 @@ private:
 #include "swift/AST/ReferenceStorage.def"
   const TypeInfo *convertBuiltinFixedArrayType(BuiltinFixedArrayType *T);
   const TypeInfo *convertBuiltinBorrowType(BuiltinBorrowType *T);
+  const TypeInfo *convertHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *T);
 
 public:
   TypeConverter(IRGenModule &IGM);

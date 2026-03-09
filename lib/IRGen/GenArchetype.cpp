@@ -146,6 +146,8 @@ public:
                         bool useStructLayouts) const override {
     return IGM.typeLayoutCache.getOrCreateArchetypeEntry(T.getObjectType());
   }
+
+  void dump() const override { llvm::errs() << "OpaqueArchetypeTypeInfo\n"; }
 };
 
 /// A type implementation for a class archetype, that is, an archetype
@@ -178,6 +180,8 @@ public:
   ReferenceCounting getReferenceCounting() const {
     return RefCount;
   }
+
+  void dump() const override { llvm::errs() << "ClassArchetypeTypeInfo\n"; }
 };
 
 class FixedSizeArchetypeTypeInfo
@@ -192,6 +196,13 @@ public:
   create(llvm::Type *type, Size size, Alignment align,
          const SpareBitVector &spareBits) {
     return new FixedSizeArchetypeTypeInfo(type, size, align, spareBits);
+  }
+
+  void dump() const override { llvm::errs() << "FixedSizeArchetypeTypeInfo\n"; }
+
+  HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+    llvm_unreachable("archetype types cannot be hidden behind "
+                     "@_implementationOnly imports");
   }
 };
 } // end anonymous namespace

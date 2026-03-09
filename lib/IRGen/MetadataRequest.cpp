@@ -45,6 +45,7 @@
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/ClangImporter/ClangModule.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/FormalLinkage.h"
 #include "swift/SIL/TypeLowering.h"
@@ -2334,6 +2335,33 @@ namespace {
       llvm_unreachable("error type should not appear in IRGen");
     }
 
+    MetadataResponse visitHiddenTypeLayoutInfoType(CanHiddenTypeLayoutInfoType type,
+                                           DynamicMetadataRequest request) {
+      auto *abiInfo = type->getDecl()->getABIInfo();
+      if (auto *resilientInfo =
+              dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(abiInfo)) {
+        auto accessorName = resilientInfo->getMetadataAccessorName();
+        auto *fnTy = llvm::FunctionType::get(
+            IGF.IGM.TypeMetadataResponseTy,
+            {IGF.IGM.SizeTy},
+            false);
+        auto *accessor = cast<llvm::Function>(
+            IGF.IGM.Module.getOrInsertFunction(accessorName, fnTy)
+                .getCallee());
+        accessor->setCallingConv(IGF.IGM.SwiftCC);
+
+        auto call =
+            IGF.Builder.CreateCall(fnTy, accessor, {request.get(IGF)});
+        call->setDoesNotThrow();
+        call->setCallingConv(IGF.IGM.SwiftCC);
+
+        return MetadataResponse::handle(IGF, request, call);
+      }
+
+      llvm_unreachable(
+          "HiddenTypeLayoutInfoType should not directly appear in IRGen");
+    }
+
     MetadataResponse visitIntegerType(CanIntegerType type,
                                       DynamicMetadataRequest request) {
       llvm_unreachable("integer type should not appear in IRGen");
@@ -3507,9 +3535,12 @@ IRGenFunction::emitTypeMetadataRef(CanType type,
     return MetadataResponse::forComplete(getDynamicSelfMetadata());
   }
   
+  // TODO: Figure out what to do for hidden types that represent a type
+  // that needs runtime metadata instantiation.
   if (type->hasArchetype() ||
       !shouldTypeMetadataAccessUseAccessor(IGM, type) ||
       isa<PackType>(type) ||
+      isa<HiddenTypeLayoutInfoType>(type) ||
       langOpts.hasFeature(Feature::Embedded)) {
     return emitDirectTypeMetadataRef(*this, type, request);
   }

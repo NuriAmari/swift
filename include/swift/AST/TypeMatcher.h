@@ -414,6 +414,15 @@ private:
     TRIVIAL_CASE(SILBoxType)
     TRIVIAL_CASE(SILMoveOnlyWrappedType)
 
+    bool visitHiddenTypeLayoutInfoType(CanHiddenTypeLayoutInfoType firstHidden, Type secondType,
+                               Type sugaredFirstType) {
+      // TODO: Determine the correct matching behavior for HiddenTypeLayoutInfoType.
+      // Should two HiddenTypeLayoutInfoTypes with equivalent layout properties
+      // (size, alignment, stride, BitwiseCopyable) be considered matching,
+      // even if they represent different underlying hidden types?
+      llvm_unreachable("HiddenTypeLayoutInfoType matching behavior not yet determined");
+    }
+
     bool visitProtocolCompositionType(CanProtocolCompositionType firstProtocolComposition,
                                       Type secondType,
                                       Type sugaredFirstType) {

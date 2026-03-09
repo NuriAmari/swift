@@ -18,6 +18,7 @@
 #include "GenType.h"
 #include "GenericRequirement.h"
 #include "IRGen.h"
+#include "IRGenMangler.h"
 #include "IRGenModule.h"
 #include "MetadataLayout.h"
 #include "NativeConventionSchema.h"
@@ -31,9 +32,11 @@
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/Assertions.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILFunctionBuilder.h"
 #include "swift/SIL/SILModule.h"
+#include "swift/SIL/TypeLowering.h"
 #include "swift/Subsystems.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/CodeGen/SwiftCallingConv.h"
@@ -100,6 +103,46 @@ public:
     return IRABIDetailsProvider::SizeAndAlignment{
         fixedTI->getFixedSize().getValue(),
         fixedTI->getFixedAlignment().getValue()};
+  }
+
+  irgen::HiddenTypeIRABIInfo *
+  getHiddenTypeIRABIInfoForDecl(const NominalTypeDecl *TD) {
+    auto *TI = &IGM.getTypeInfoForUnlowered(TD->getDeclaredTypeInContext(),
+                                             TypeExpansionContext::minimal());
+    // TODO: remove dump and silent fail on null abi info
+    TI->dump();
+    auto *abiInfo = TI->getHiddenTypeIRABIInfo(TD->getASTContext());
+    if (!abiInfo)
+      return nullptr;
+    assert(abiInfo && "TypeInfo must provide hidden ABI info");
+
+    if (auto *loadable =
+            dyn_cast<irgen::LoadableHiddenStructTypeIRABIInfo>(abiInfo)) {
+      auto props = typeConverter.getTypeProperties(
+          TD->getDeclaredTypeInContext(), TypeExpansionContext::minimal());
+      loadable->setSILTypeProperties(props);
+    }
+
+    if (auto *addressOnly =
+            dyn_cast<irgen::AddressOnlyHiddenStructTypeIRABIInfo>(abiInfo)) {
+      auto props = typeConverter.getTypeProperties(
+          TD->getDeclaredTypeInContext(), TypeExpansionContext::minimal());
+      addressOnly->setSILTypeProperties(props);
+    }
+
+    if (auto *resilient =
+            dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(abiInfo)) {
+      IRGenMangler mangler(TD->getASTContext());
+      auto accessorName = mangler.mangleTypeMetadataAccessFunction(
+          TD->getDeclaredTypeInContext());
+      resilient->setMetadataAccessorName(accessorName);
+
+      auto props = typeConverter.getTypeProperties(
+          TD->getDeclaredTypeInContext(), TypeExpansionContext::minimal());
+      resilient->setSILTypeProperties(props);
+    }
+
+    return abiInfo;
   }
 
   IRABIDetailsProvider::FunctionABISignature
@@ -471,6 +514,11 @@ IRABIDetailsProvider::~IRABIDetailsProvider() {}
 std::optional<IRABIDetailsProvider::SizeAndAlignment>
 IRABIDetailsProvider::getTypeSizeAlignment(const NominalTypeDecl *TD) {
   return impl->getTypeSizeAlignment(TD);
+}
+
+irgen::HiddenTypeIRABIInfo *
+IRABIDetailsProvider::getHiddenTypeIRABIInfo(const NominalTypeDecl *TD) {
+  return impl->getHiddenTypeIRABIInfoForDecl(TD);
 }
 
 std::optional<LoweredFunctionSignature>

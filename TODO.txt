@@ -1,0 +1,15 @@
+- raw_layout structs
+- move only structs
+- move only structs with deinit
+- different kinds of reference counted types
+- structs that have types that are anonymous and not loaded by XREF? Is that possible
+- check tuples / arrays?
+- resilient types
+  - we've handled resilient structs, but what about other kinds of resilient types
+- C++ types treated as resilient but support recovery
+- Generic types?
+- Build confidence that we are setting SILTypeProperties correctly
+- Build confidence we are deriving TypeLowering* correctly
+- make the "this type need a hidden representation" predicate predicate more robust
+  - nested public structs inside public structs for example are not checked yet
+

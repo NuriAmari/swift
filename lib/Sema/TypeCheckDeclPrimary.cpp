@@ -2420,6 +2420,11 @@ public:
     });
   }
 
+  void visitHiddenTypeLayoutInfoDecl(HiddenTypeLayoutInfoDecl *) {
+    // Hidden type layout decls are synthesized during deserialization and
+    // don't need type-checking.
+  }
+
   void visitBoundVariable(VarDecl *VD) {
     // WARNING: Anything you put in this function will only be run when the
     // VarDecl is fully type-checked within its own file. It will NOT be run

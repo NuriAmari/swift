@@ -39,15 +39,18 @@
 #include "LegacyLayoutFormat.h"
 #include "LoadableTypeInfo.h"
 #include "GenCall.h"
+#include "GenClass.h"
 #include "GenMeta.h"
 #include "GenPoly.h"
 #include "GenProto.h"
+#include "GenStruct.h"
 #include "GenType.h"
 #include "IRGenFunction.h"
 #include "IRGenModule.h"
 #include "Address.h"
 #include "Explosion.h"
 #include "GenOpaque.h"
+#include "GenStruct.h"
 #include "HeapTypeInfo.h"
 #include "IndirectTypeInfo.h"
 #include "Outlining.h"
@@ -1014,6 +1017,8 @@ namespace {
                           bool useStructLayouts) const override {
       return IGM.typeLayoutCache.getEmptyEntry();
     }
+
+    void dump() const override { llvm::errs() << "EmptyTypeInfo\n"; }
   };
 
   /// A TypeInfo implementation for types represented as a single
@@ -1025,6 +1030,13 @@ namespace {
                       SpareBitVector &&spareBits,
                       Alignment align)
       : PODSingleScalarTypeInfo(storage, size, std::move(spareBits), align) {}
+
+    void dump() const override { llvm::errs() << "PrimitiveTypeInfo\n"; }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("builtin primitive types cannot be hidden behind "
+                       "@_implementationOnly imports");
+    }
   };
 
   /// A TypeInfo implementation for pointers that are:
@@ -1074,6 +1086,13 @@ namespace {
                               Address dest, SILType T,
                               bool isOutlined) const override {
       getPointerInfo().storeExtraInhabitant(IGF, index, dest);
+    }
+
+    void dump() const override { llvm::errs() << "AlignedRawPointerTypeInfo\n"; }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("builtin primitive types cannot be hidden behind "
+                       "@_implementationOnly imports");
     }
   };
 
@@ -1129,6 +1148,13 @@ namespace {
       // There's only one extra inhabitant, 0.
       dest = IGF.Builder.CreateElementBitCast(dest, IGF.IGM.IntPtrTy);
       IGF.Builder.CreateStore(llvm::ConstantInt::get(IGF.IGM.IntPtrTy, 0),dest);
+    }
+
+    void dump() const override { llvm::errs() << "RawPointerTypeInfo\n"; }
+
+    HiddenTypeIRABIInfo *getHiddenTypeIRABIInfo(ASTContext &ctx) const override {
+      llvm_unreachable("builtin primitive types cannot be hidden behind "
+                       "@_implementationOnly imports");
     }
   };
 
@@ -1279,6 +1305,8 @@ namespace {
         offset += scalarTy->getIntegerBitWidth();
       }
     }
+
+    void dump() const override { llvm::errs() << "OpaqueStorageTypeInfo\n"; }
   };
 
   template <class Impl, class Base>
@@ -1341,6 +1369,8 @@ namespace {
                               IsNotBitwiseTakable,
                               IsNotCopyable,
                               IsFixedSize, IsABIAccessible) {}
+
+    void dump() const override { llvm::errs() << "ImmovableTypeInfo\n"; }
   };
 
   /// A TypeInfo implementation for address-only types which can never
@@ -1426,6 +1456,8 @@ namespace {
                                    bool isOutlined) const override {
       llvm_unreachable("should not call on an immovable opaque type");
     }
+
+    void dump() const override { llvm::errs() << "OpaqueImmovableTypeInfo\n"; }
   };
 } // end anonymous namespace
 
@@ -1908,9 +1940,9 @@ SILType IRGenModule::getLoweredType(AbstractionPattern orig, Type subst) const {
 }
 
 /// Return the SIL-lowering of the given type.
-SILType IRGenModule::getLoweredType(Type subst) const {
-  return getSILTypes().getLoweredType(
-      subst, TypeExpansionContext::maximalResilienceExpansionOnly());
+SILType IRGenModule::getLoweredType(Type subst,
+                                    TypeExpansionContext forExpansion) const {
+  return getSILTypes().getLoweredType(subst, forExpansion);
 }
 
 /// Return the SIL-lowering of the given type.
@@ -1958,8 +1990,9 @@ llvm::Type *IRGenModule::getStorageTypeForLowered(CanType T) {
 /// Get the type information for the given type, which may not have
 /// yet undergone SIL type lowering.  The type can serve as its own
 /// abstraction pattern.
-const TypeInfo &IRGenModule::getTypeInfoForUnlowered(Type subst) {
-  return getTypeInfoForUnlowered(AbstractionPattern(subst), subst);
+const TypeInfo &IRGenModule::getTypeInfoForUnlowered(
+    Type subst, TypeExpansionContext forExpansion) {
+  return getTypeInfo(getLoweredType(subst, forExpansion));
 }
 
 /// Get the type information for the given type, which may not
@@ -2257,6 +2290,8 @@ const TypeInfo *TypeConverter::convertType(CanType ty) {
 #include "swift/AST/TypeNodes.def"
   case TypeKind::LValue:
     llvm_unreachable("@lvalue type made it to IRGen");
+  case TypeKind::HiddenTypeLayoutInfo:
+    return convertHiddenTypeLayoutInfoType(cast<HiddenTypeLayoutInfoType>(ty));
   case TypeKind::BuiltinTuple:
     llvm_unreachable("BuiltinTupleType made it to IRGen");
   case TypeKind::ExistentialMetatype:
@@ -2622,6 +2657,8 @@ public:
                        bool isOutlined) const override {
     llvm_unreachable("TypeConverter::Mode::Legacy is not for real values");
   }
+
+  void dump() const override { llvm::errs() << "LegacyTypeInfo\n"; }
 };
 
 } // namespace
@@ -2727,6 +2764,32 @@ const TypeInfo *TypeConverter::convertAnyNominalType(CanType type,
 
 const TypeInfo *TypeConverter::convertModuleType(ModuleType *T) {
   return new EmptyTypeInfo(IGM.Int8Ty);
+}
+
+const TypeInfo *TypeConverter::convertHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *T) {
+  auto *decl = T->getDecl();
+  auto *abiInfo = decl->getABIInfo();
+
+  if (auto *loadableInfo = llvm::dyn_cast_or_null<LoadableHiddenStructTypeIRABIInfo>(abiInfo)) {
+    return createTypeInfoFromABIInfo(IGM, CanHiddenTypeLayoutInfoType(T), *loadableInfo);
+  }
+
+  if (auto *refInfo = llvm::dyn_cast_or_null<HiddenReferenceTypeIRABIInfo>(abiInfo)) {
+    return createReferenceTypeInfoFromABIInfo(IGM, *refInfo);
+  }
+
+  if (auto *resilientInfo =
+          llvm::dyn_cast_or_null<HiddenResilientStructTypeIRABIInfo>(abiInfo)) {
+    return createResilientTypeInfoFromABIInfo(IGM, *resilientInfo);
+  }
+
+  if (auto *addressOnlyInfo =
+          llvm::dyn_cast_or_null<AddressOnlyHiddenStructTypeIRABIInfo>(abiInfo)) {
+    return createAddressOnlyTypeInfoFromABIInfo(IGM, CanHiddenTypeLayoutInfoType(T),
+                                                 *addressOnlyInfo);
+  }
+
+  llvm_unreachable("unhandled hidden type ABI info kind");
 }
 
 const TypeInfo *TypeConverter::convertMetatypeType(MetatypeType *T) {

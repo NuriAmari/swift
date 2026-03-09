@@ -733,6 +733,9 @@ namespace {
       IGF.emit##Name##Destroy(addr, Refcounting); \
     } \
     StringRef getStructNameSuffix() const { return "." #name "ref"; } \
+    void dump() const override { \
+      llvm::errs() << "AddressOnly" #Name "ClassExistentialTypeInfo\n"; \
+    } \
     REF_STORAGE_HELPER(Name, FixedTypeInfo) \
   };
 #define ALWAYS_LOADABLE_CHECKED_REF_STORAGE(Name, ...) \
@@ -802,6 +805,9 @@ namespace {
     getValueTypeInfoForExtraInhabitants(IRGenModule &IGM) const { \
       llvm_unreachable("should have overridden all actual uses of this"); \
     } \
+    void dump() const override { \
+      llvm::errs() << "Loadable" #Name "ClassExistentialTypeInfo\n"; \
+    } \
     REF_STORAGE_HELPER(Name, LoadableTypeInfo) \
   };
 #define SOMETIMES_LOADABLE_CHECKED_REF_STORAGE(Name, name, ...) \
@@ -868,6 +874,9 @@ namespace {
     void emitValueRelease(IRGenFunction &IGF, llvm::Value *value, \
                           Atomicity atomicity) const {} \
     void emitValueFixLifetime(IRGenFunction &IGF, llvm::Value *value) const {} \
+    void dump() const override { \
+      llvm::errs() << #Name "ClassExistentialTypeInfo\n"; \
+    } \
   };
 #include "swift/AST/ReferenceStorage.def"
 #undef REF_STORAGE_HELPER
@@ -1052,6 +1061,7 @@ public:
     auto type = getLayout().projectMetadataRef(IGF, dest);
     return storeHeapObjectExtraInhabitant(IGF, index, type);
   }
+  void dump() const override { llvm::errs() << "OpaqueExistentialTypeInfo\n"; }
 };
 
 
@@ -1395,6 +1405,7 @@ public:
     auto storageTy = llvm::StructType::get(IGM.getLLVMContext(), fieldTys);
     return storageTy;
   }
+  void dump() const override { llvm::errs() << "ClassExistentialTypeInfo\n"; }
 };
 
 /// A type implementation for existential metatypes.
@@ -1446,6 +1457,7 @@ public:
   void emitValueFixLifetime(IRGenFunction &IGF, llvm::Value *value) const {
     // do nothing
   }
+  void dump() const override { llvm::errs() << "ExistentialMetatypeTypeInfo\n"; }
 };
 
 /// Type info for error existentials, currently the only kind of boxed
@@ -1493,6 +1505,7 @@ public:
   ArrayRef<const ProtocolDecl *> getStoredProtocols() const {
     return ErrorProto;
   }
+  void dump() const override { llvm::errs() << "ErrorExistentialTypeInfo\n"; }
 };
   
 } // end anonymous namespace

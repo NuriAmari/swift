@@ -40,6 +40,7 @@
 #include "swift/Basic/Statistic.h"
 #include "swift/ClangImporter/ClangImporter.h"
 #include "swift/ClangImporter/ClangModule.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/ClangImporter/SwiftAbstractBasicReader.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "clang/AST/DeclTemplate.h"
@@ -2155,6 +2156,32 @@ findNestedTypeDeclInModule(ModuleDecl *extensionModule,
   return findNestedTypeDeclInModule(nullptr, extensionModule, name, parent);
 }
 
+void ModuleFile::consumeHiddenTypeXRefPathPieces(
+    uint32_t pathLen, SmallVectorImpl<XRefTypePathPiece> &pieces) {
+  using namespace decls_block;
+  for (uint32_t i = 0; i < pathLen; ++i) {
+    auto entry =
+        fatalIfUnexpected(DeclTypeCursor.advance(AF_DontPopBlockAtEnd));
+    if (entry.Kind != llvm::BitstreamEntry::Record)
+      return;
+    SmallVector<uint64_t, 8> scratch;
+    StringRef blobData;
+    unsigned recordID = fatalIfUnexpected(
+        DeclTypeCursor.readRecord(entry.ID, scratch, &blobData));
+    assert(recordID == XREF_TYPE_PATH_PIECE &&
+           "only nominal type XREFs should have localRepresentationDeclID");
+    IdentifierID IID, privateDiscriminator;
+    bool inProtocolExt, importedFromClang;
+    XRefTypePathPieceLayout::readRecord(scratch, IID, privateDiscriminator,
+                                        inProtocolExt, importedFromClang);
+    pieces.push_back(
+        {getIdentifier(IID),
+         privateDiscriminator ? getIdentifier(privateDiscriminator)
+                              : Identifier(),
+         inProtocolExt, importedFromClang});
+  }
+}
+
 Expected<Decl *>
 ModuleFile::resolveCrossReference(ModuleID MID, uint32_t pathLen) {
   using namespace decls_block;
@@ -2163,6 +2190,9 @@ ModuleFile::resolveCrossReference(ModuleID MID, uint32_t pathLen) {
   if (!baseModule) {
     return llvm::make_error<XRefNonLoadedModuleError>(getIdentifier(MID));
   }
+
+  // In the case of an internal module we would fail here
+  // and then we should try to read the local record
 
   assert(baseModule && "missing dependency");
   PrettyXRefTrace pathTrace(*baseModule);
@@ -4100,14 +4130,25 @@ public:
     auto backingPropertyIDs = arrayFieldIDs.slice(0, numBackingProperties);
     arrayFieldIDs = arrayFieldIDs.slice(numBackingProperties);
 
-    for (TypeID dependencyID : arrayFieldIDs) {
-      auto dependency = MF.getTypeChecked(dependencyID);
-      if (!dependency) {
-        return llvm::make_error<TypeError>(
-            name, takeErrorInfo(dependency.takeError()),
-            getErrorFlags(), numVTableEntries);
-      }
-    }
+    // TODO: Discuss the correct change
+    // Here we have removed a loop iterating arrayFieldIDs that attempts to resolve
+    // each TypeID and produces an llvm::Error if it fails for any.
+    //
+    // Initially VarDecl records included an interfaceTypeID and a canonicalTypeID
+    // introduced in https://github.com/swiftlang/swift/pull/8933. For reasons
+    // I don't understand, we attempt to deserialize the canonicalTypeID, dropping
+    // the decl if we fail.
+    //
+    // Then in https://github.com/swiftlang/swift/pull/9666 we replaced the canonicalTypeID
+    // with a list of referenced TypeIDs. The problem with this for us is that
+    // if a VarDecl uses a nested hidden type: `var Outer.Inner foo`, is we will
+    // fail to resolve a TypeID to `Outer` even if we have hidden layout info for
+    // `Outer.Inner`. 
+    //
+    // For now I have just removed the resolution of all referenced TypeIDs to make
+    // recovery of nested hidden types work, but I would like to discuss since
+    // I don't understand why we were using the canonicalTypeID instead of the interfaceTypeID
+    // to begin with.
 
     DeclContext *DC;
     SET_OR_RETURN_ERROR(DC, MF.getDeclContextChecked(contextID));
@@ -4131,7 +4172,9 @@ public:
 
     auto interfaceTypeOrError = MF.getTypeChecked(interfaceTypeID);
     if (!interfaceTypeOrError)
-      return interfaceTypeOrError.takeError();
+      return llvm::make_error<TypeError>(
+          name, takeErrorInfo(interfaceTypeOrError.takeError()),
+          getErrorFlags(), numVTableEntries);
     Type interfaceType = interfaceTypeOrError.get();
     var->setInterfaceType(interfaceType);
     var->setImplicitlyUnwrappedOptional(isIUO);
@@ -5782,6 +5825,167 @@ ModuleFile::getDeclChecked(
   return declOrOffset;
 }
 
+Expected<Decl *>
+ModuleFile::getHiddenTypeLayoutInfoDecl(DeclID DID) {
+  using namespace decls_block;
+
+  if (DID == 0)
+    return nullptr;
+
+  assert(DID <= HiddenTypeLayoutInfoDecls.size() && "invalid hidden type layout decl ID");
+  auto &declOrOffset = HiddenTypeLayoutInfoDecls[DID-1];
+
+  if (declOrOffset.isComplete())
+    return declOrOffset.get();
+
+  // Save and restore cursor position
+  BCOffsetRAII restoreOffset(DeclTypeCursor);
+
+  // Jump to the correct offset for this hidden type layout record
+  if (auto error =
+          diagnoseFatalIfNotSuccess(DeclTypeCursor.JumpToBit(declOrOffset)))
+    return std::move(error);
+
+  // Read the record
+  SmallVector<uint64_t, 8> scratch;
+  StringRef blobData;
+  llvm::BitstreamEntry entry =
+      fatalIfUnexpected(DeclTypeCursor.advance(AF_DontPopBlockAtEnd));
+  if (entry.Kind != llvm::BitstreamEntry::Record)
+    return diagnoseFatal();
+
+  unsigned recordID = fatalIfUnexpected(
+      DeclTypeCursor.readRecord(entry.ID, scratch, &blobData));
+
+  ASTContext &ctx = getContext();
+  DeclContext *DC = getAssociatedModule();
+
+  Decl *result = nullptr;
+
+  switch (recordID) {
+  case HIDDEN_LOADABLE_STRUCT_TYPE: {
+    uint8_t kind;
+    uint32_t size;
+    uint8_t alignment;
+    uint16_t explosionSize;
+    bool isTriviallyDestroyable;
+    bool isBitwiseTakable;
+    bool isCopyable;
+    bool isFixedSize;
+    bool isABIAccessible;
+    uint16_t silTypePropertiesFlags;
+    ArrayRef<uint64_t> fieldTypeIDs;
+
+    HiddenLoadableStructTypeLayoutDescriptorLayout::readRecord(
+        scratch, kind, size, alignment, explosionSize,
+        isTriviallyDestroyable, isBitwiseTakable, isCopyable,
+        isFixedSize, isABIAccessible, silTypePropertiesFlags, fieldTypeIDs);
+
+    auto *decl = HiddenTypeLayoutInfoDecl::create(ctx, DC);
+
+    using Kind = irgen::HiddenTypeIRABIInfo::Kind;
+    if (static_cast<Kind>(kind) == Kind::LoadableStruct) {
+      // Resolve field TypeIDs to Types
+      SmallVector<Type, 4> fieldTypes;
+      for (auto rawID : fieldTypeIDs) {
+        auto fieldType = getType(static_cast<serialization::TypeID>(rawID));
+        fieldTypes.push_back(fieldType);
+      }
+
+      auto *abiInfo = new (ctx) irgen::LoadableHiddenStructTypeIRABIInfo(
+          fieldTypes, explosionSize, size, alignment,
+          isTriviallyDestroyable, isBitwiseTakable, isCopyable,
+          isFixedSize, isABIAccessible);
+      abiInfo->setSILTypeProperties(
+          SILTypeProperties::fromRawFlags(silTypePropertiesFlags));
+      decl->setABIInfo(abiInfo);
+    }
+
+    result = decl;
+    break;
+  }
+
+  case HIDDEN_REFERENCE_TYPE: {
+    uint8_t refcounting;
+
+    HiddenReferenceTypeLayoutDescriptorLayout::readRecord(
+        scratch, refcounting);
+
+    auto *decl = HiddenTypeLayoutInfoDecl::create(ctx, DC);
+    auto *abiInfo = new (ctx) irgen::HiddenReferenceTypeIRABIInfo(
+        static_cast<ReferenceCounting>(refcounting));
+    decl->setABIInfo(abiInfo);
+
+    result = decl;
+    break;
+  }
+
+  case HIDDEN_RESILIENT_STRUCT_TYPE: {
+    bool isCopyable;
+    bool isABIAccessible;
+    uint16_t silTypePropertiesFlags;
+
+    HiddenResilientStructTypeLayoutDescriptorLayout::readRecord(
+        scratch, isCopyable, isABIAccessible, silTypePropertiesFlags);
+
+    auto *decl = HiddenTypeLayoutInfoDecl::create(ctx, DC);
+    auto *abiInfo = new (ctx) irgen::HiddenResilientStructTypeIRABIInfo(
+        blobData, isCopyable, isABIAccessible);
+    abiInfo->setSILTypeProperties(
+        SILTypeProperties::fromRawFlags(silTypePropertiesFlags));
+    decl->setABIInfo(abiInfo);
+
+    result = decl;
+    break;
+  }
+
+  case HIDDEN_ADDRESS_ONLY_STRUCT_TYPE: {
+    uint32_t size;
+    uint8_t alignment;
+    bool isTriviallyDestroyable;
+    bool isBitwiseTakable;
+    bool isCopyable;
+    bool isFixedSize;
+    bool isABIAccessible;
+    uint16_t silTypePropertiesFlags;
+    ArrayRef<uint64_t> fieldTypeIDs;
+
+    HiddenAddressOnlyStructTypeLayoutDescriptorLayout::readRecord(
+        scratch, size, alignment, isTriviallyDestroyable, isBitwiseTakable,
+        isCopyable, isFixedSize, isABIAccessible, silTypePropertiesFlags,
+        fieldTypeIDs);
+
+    auto *decl = HiddenTypeLayoutInfoDecl::create(ctx, DC);
+
+    SmallVector<Type, 4> fieldTypes;
+    for (auto rawID : fieldTypeIDs) {
+      auto fieldType = getType(static_cast<serialization::TypeID>(rawID));
+      fieldTypes.push_back(fieldType);
+    }
+
+    auto *abiInfo = new (ctx) irgen::AddressOnlyHiddenStructTypeIRABIInfo(
+        fieldTypes, size, alignment,
+        isTriviallyDestroyable, isBitwiseTakable, isCopyable,
+        isFixedSize, isABIAccessible);
+    abiInfo->setSILTypeProperties(
+        SILTypeProperties::fromRawFlags(silTypePropertiesFlags));
+    decl->setABIInfo(abiInfo);
+
+    result = decl;
+    break;
+  }
+
+  default:
+    return llvm::make_error<llvm::StringError>(
+        "Unknown hidden type layout record",
+        llvm::inconvertibleErrorCode());
+  }
+
+  // Cache the result
+  declOrOffset = result;
+  return result;
+}
+
 static std::optional<AvailabilityDomainKind>
 decodeDomainKind(uint8_t kind) {
   switch (kind) {
@@ -6888,12 +7092,55 @@ DeclDeserializer::getDeclCheckedImpl(
     assert(DAttrs == nullptr);
     ModuleID baseModuleID;
     uint32_t pathLen;
-    decls_block::XRefLayout::readRecord(scratch, baseModuleID, pathLen);
+    DeclID localRepresentationDeclID;
+    decls_block::XRefLayout::readRecord(scratch, baseModuleID, localRepresentationDeclID, pathLen);
     auto resolved = MF.resolveCrossReference(baseModuleID, pathLen);
-    if (!resolved)
-      return resolved;
-    declOrOffset = resolved.get();
-    break;
+    if (resolved) {
+      declOrOffset = resolved.get();
+      break;
+    }
+
+    // If resolution failed but we have a local representation (hidden type
+    // layout info), try to use that instead.
+    if (localRepresentationDeclID != 0) {
+      // Check if the failure is because the module wasn't loaded — in that
+      // case, the path pieces are still unconsumed in the cursor. We capture
+      // them so they can be re-emitted as an XREF during re-serialization.
+      Identifier originalModuleName;
+      SmallVector<XRefTypePathPiece, 2> originalPath;
+      bool isNonLoadedModule =
+          resolved.errorIsA<XRefNonLoadedModuleError>();
+      if (isNonLoadedModule) {
+        originalModuleName = MF.getIdentifier(baseModuleID);
+        MF.consumeHiddenTypeXRefPathPieces(pathLen, originalPath);
+      }
+
+      llvm::consumeError(resolved.takeError());
+      auto localDecl =
+          MF.getHiddenTypeLayoutInfoDecl(localRepresentationDeclID);
+      if (localDecl) {
+        if (isNonLoadedModule && !originalPath.empty()) {
+          auto *hidden =
+              cast<HiddenTypeLayoutInfoDecl>(localDecl.get());
+          hidden->setOriginalModuleName(originalModuleName);
+          hidden->setOriginalXRefPath(MF.getContext(), originalPath);
+        }
+        declOrOffset = localDecl.get();
+        break;
+      }
+      // If we couldn't get the local representation, fall through to
+      // return a generic error.
+      // TODO: Create a more specific error type for this case. The XREF
+      // module not being loaded is expected when a local hidden type layout
+      // representation exists — the error should only surface if the local
+      // representation itself can't be resolved.
+      llvm::consumeError(localDecl.takeError());
+      return llvm::make_error<XRefNonLoadedModuleError>(
+          originalModuleName.empty() ? MF.getIdentifier(baseModuleID)
+                                     : originalModuleName);
+    }
+
+    return resolved;
   }
 
   default:
@@ -7286,13 +7533,27 @@ Expected<Type> DESERIALIZE_TYPE(NOMINAL_TYPE)(
   TypeID parentID;
   decls_block::NominalTypeLayout::readRecord(scratch, declID, parentID);
 
+  // Resolve the DeclID before the parent type. For nested hidden types (e.g.
+  // Outer.Inner from an @_implementationOnly import), the parent type's XREF
+  // may fail when the defining module is not loaded. If we resolved the parent
+  // first, we'd never reach the DeclID -- which has a
+  // localRepresentationDeclID fallback -- and the hidden type layout info
+  // would be lost.
+  auto nominalOrError = MF.getDeclChecked(declID);
+
+  if (!nominalOrError)
+    return nominalOrError.takeError();
+
+  // If the DeclID resolved to a HiddenTypeLayoutInfoDecl, the parent type
+  // is not needed -- HiddenTypeLayoutInfoType is a flat representation that
+  // doesn't carry parent type information.
+  if (auto *hidden = dyn_cast<HiddenTypeLayoutInfoDecl>(nominalOrError.get())) {
+    return HiddenTypeLayoutInfoType::get(hidden, MF.getContext());
+  }
+
   Expected<Type> parentTy = MF.getTypeChecked(parentID);
   if (!parentTy)
     return parentTy.takeError();
-
-  auto nominalOrError = MF.getDeclChecked(declID);
-  if (!nominalOrError)
-    return nominalOrError.takeError();
 
   // Look through compatibility aliases.
   if (auto *alias = dyn_cast<TypeAliasDecl>(nominalOrError.get())) {

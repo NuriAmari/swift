@@ -150,6 +150,8 @@ public:
   std::nullopt_t getNonFixedOffsets(IRGenFunction &IGF, SILType T) const {
     return std::nullopt;
   }
+
+  void dump() const override { llvm::errs() << "DifferentiableFuncTypeInfo\n"; }
 };
 
 class DifferentiableFuncTypeBuilder
@@ -329,6 +331,8 @@ public:
   std::nullopt_t getNonFixedOffsets(IRGenFunction &IGF, SILType T) const {
     return std::nullopt;
   }
+
+  void dump() const override { llvm::errs() << "LinearFuncTypeInfo\n"; }
 };
 
 class LinearFuncTypeBuilder

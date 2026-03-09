@@ -64,6 +64,9 @@ class PointerAuthQualifier;
 } // end namespace clang
 
 namespace swift {
+namespace irgen {
+  class HiddenTypeIRABIInfo;
+} // end namespace irgen
   enum class AccessSemantics : unsigned char;
   class AccessorDecl;
   class ApplyExpr;
@@ -9931,6 +9934,65 @@ public:
   }
   static bool classof(const FreestandingMacroExpansion *expansion) {
     return expansion->getFreestandingMacroKind() == FreestandingMacroKind::Decl;
+  }
+};
+
+/// Represents one piece of a serialized cross-reference path, allowing
+/// HiddenTypeLayoutInfoDecl to re-emit an XREF to the original type.
+struct XRefTypePathPiece {
+  Identifier Name;
+  Identifier PrivateDiscriminator;
+  bool InProtocolExt;
+  bool ImportedFromClang;
+};
+
+/// Represents a type whose full definition is hidden from the current module
+/// (e.g., from an @_implementationOnly import) but whose layout information
+/// is available for code generation.
+///
+/// These declarations are produced during deserialization when an XREF to a
+/// type cannot be resolved, but hidden layout information is available.
+/// From the type-checking perspective, all hidden types are equivalent --
+/// they carry no semantic information beyond being a placeholder.
+class HiddenTypeLayoutInfoDecl final : public TypeDecl {
+  friend class Decl;
+
+  irgen::HiddenTypeIRABIInfo *ABIInfo = nullptr;
+
+  /// The original module name from the failed XREF, used to re-emit
+  /// an XREF during transitive re-serialization.
+  Identifier OriginalModuleName;
+
+  /// The original XREF path pieces from the failed XREF.
+  ArrayRef<XRefTypePathPiece> OriginalXRefPath;
+
+  HiddenTypeLayoutInfoDecl(DeclContext *DC)
+      : TypeDecl(DeclKind::HiddenTypeLayoutInfo, DC, Identifier(), SourceLoc(), {}) {
+    setImplicit();
+  }
+
+  SourceLoc getLocFromSource() const { return SourceLoc(); }
+
+public:
+  static HiddenTypeLayoutInfoDecl *create(ASTContext &ctx, DeclContext *DC);
+
+  irgen::HiddenTypeIRABIInfo *getABIInfo() const { return ABIInfo; }
+  void setABIInfo(irgen::HiddenTypeIRABIInfo *info) { ABIInfo = info; }
+
+  Identifier getOriginalModuleName() const { return OriginalModuleName; }
+  void setOriginalModuleName(Identifier name) { OriginalModuleName = name; }
+
+  ArrayRef<XRefTypePathPiece> getOriginalXRefPath() const {
+    return OriginalXRefPath;
+  }
+  void setOriginalXRefPath(ASTContext &ctx, ArrayRef<XRefTypePathPiece> path);
+
+  bool hasOriginalXRefInfo() const { return !OriginalModuleName.empty(); }
+
+  SourceRange getSourceRange() const { return SourceRange(); }
+
+  static bool classof(const Decl *D) {
+    return D->getKind() == DeclKind::HiddenTypeLayoutInfo;
   }
 };
 

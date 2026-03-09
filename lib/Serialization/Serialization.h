@@ -24,8 +24,10 @@
 #include "swift/AST/Identifier.h"
 #include "swift/AST/RequirementSignature.h"
 #include "swift/Basic/LLVM.h"
+#include "swift/IRGen/IRABIDetailsProvider.h"
 #include "llvm/ADT/MapVector.h"
 #include <array>
+#include <memory>
 #include <queue>
 #include <tuple>
 
@@ -34,6 +36,7 @@ namespace clang {
 }
 
 namespace swift {
+  class HiddenTypeLayoutInfoDecl;
   class SILModule;
 
   namespace fine_grained_dependencies {
@@ -53,7 +56,7 @@ protected:
   SmallVector<uint64_t, 64> ScratchRecord;
 
   /// The module currently being serialized.
-  const ModuleDecl *M = nullptr;
+  ModuleDecl *M = nullptr;
 
   /// The SourceFile currently being serialized, if any.
   ///
@@ -83,8 +86,17 @@ class Serializer : public SerializerBase {
   friend class DeclSerializer;
   class TypeSerializer;
   friend class TypeSerializer;
+  class HiddenDeclSerializer;
+  friend class HiddenDeclSerializer;
 
   const SerializationOptions &Options;
+
+  /// Layout provider for computing type layouts of hidden types.
+  /// Null if IRGenOptions were not provided.
+  std::unique_ptr<IRABIDetailsProvider> LayoutProvider;
+
+  /// Returns the layout provider, or nullptr if unavailable.
+  IRABIDetailsProvider *getLayoutProvider() const;
 
   /// A map from non-identifier uniqued strings to their serialized IDs.
   ///
@@ -214,6 +226,10 @@ class Serializer : public SerializerBase {
   ASTBlockRecordKeeper<const Decl *, DeclID,
                        index_block::DECL_OFFSETS>
   DeclsToSerialize;
+
+  ASTBlockRecordKeeper<const Decl *, DeclID,
+                       index_block::HIDDEN_TYPE_LAYOUT_INFORMATION_RECORD_OFFSETS>
+  DeclsToSerializeHiddenTypeLayoutInformationFor;
 
   ASTBlockRecordKeeper<Type, TypeID,
                        index_block::TYPE_OFFSETS>
@@ -350,10 +366,15 @@ private:
   bool shouldSkipDecl(const Decl *D) const;
 
   /// Writes a reference to a decl in another module.
-  void writeCrossReference(const DeclContext *DC, uint32_t pathLen = 1);
+  void writeCrossReference(const DeclContext *DC, uint32_t pathLen, DeclID localRepresentationDeclID);
 
   /// Writes a reference to a decl in another module.
-  void writeCrossReference(const Decl *D);
+  void writeCrossReference(const Decl *D, DeclID localRepresentationDeclID);
+
+  /// Writes an XREF for a HiddenTypeLayoutInfoDecl, re-emitting the
+  /// original module/type path that was captured during deserialization.
+  void writeHiddenTypeXRef(const HiddenTypeLayoutInfoDecl *hidden,
+                           DeclID localRepresentationDeclID);
 
   /// Writes the given decl.
   void writeASTBlockEntity(const Decl *D);
@@ -428,6 +449,12 @@ private:
   /// additional identifiers to the pool.
   std::vector<CharOffset> writeAllIdentifiers();
 
+  /// Writes hidden type layout information for any pending declarations.
+  /// Returns true if any records were written.
+  bool writeHiddenTypeLayoutInformationIfNeeded();
+
+  void writeHiddenLayoutInformationForDecl(const Decl* D);
+
   /// Writes the offsets for a serialized entity kind.
   ///
   /// \see ASTBlockRecordKeeper
@@ -452,7 +479,10 @@ private:
 public:
   Serializer(ArrayRef<unsigned char> signature, ModuleOrSourceFile DC,
              const SerializationOptions &options)
-      : SerializerBase(signature, DC), Options(options) {}
+      : SerializerBase(signature, DC), Options(options),
+        LayoutProvider(options.IRGenOpts
+            ? std::make_unique<IRABIDetailsProvider>(*M, *options.IRGenOpts)
+            : nullptr) {}
 
   /// Serialize a module to the given stream.
   static void

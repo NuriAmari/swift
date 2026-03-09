@@ -428,7 +428,10 @@ public:
   ///   will be filled with this layout
   StructLayout(IRGenModule &IGM, std::optional<CanType> type, LayoutKind kind,
                LayoutStrategy strategy, ArrayRef<const TypeInfo *> fields,
-               llvm::StructType *typeToFill = 0);
+               llvm::StructType *typeToFill = 0,
+               IsTriviallyDestroyable_t isTriviallyDestroyableDefaultValue = IsTriviallyDestroyable,
+               IsCopyable_t isCopyableDefaultValue = IsCopyable,
+               IsBitwiseTakable_t isBitwiseTakableDefaultValue = IsBitwiseTakableAndBorrowable);
 
   /// Create a structure layout from a builder.
   StructLayout(const StructLayoutBuilder &builder,
