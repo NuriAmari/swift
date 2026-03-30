@@ -36,6 +36,15 @@
 // RUN: %target-swift-frontend -typecheck %t/ClientTestableImport.swift -o %t \
 // RUN:   -swift-version 5 -I %t -verify
 
+
+// Repeat the same test as above, but with explicit modules
+// RUN: %target-swift-frontend -emit-module %t/HiddenDep.swift -o %t/HiddenDep.swiftmodule \
+// RUN:  -swift-version 5 -enable-library-evolution
+// RUN: %target-swift-frontend -emit-module %t/TestedLib.swift -o %t/TestedLib.swiftmodule \
+// RUN:  -swift-version 5 -enable-library-evolution -swift-module-file=HiddenDep=%t/HiddenDep.swiftmodule
+// RUN: rm %t/HiddenDep.swiftmodule
+// RUN: %target-swift-frontend -emit-module %t/Client.swift -swift-version 5
+
 //--- HiddenDep.swift
 
 public struct HiddenType {}
