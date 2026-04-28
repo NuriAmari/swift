@@ -1729,29 +1729,83 @@ DEFINE_EMPTY_CAN_TYPE_WRAPPER(ErrorType, Type)
 /// HiddenTypeLayoutInfoType - Represents a type whose actual definition is
 /// hidden (e.g., from an @_implementationOnly import) but whose layout
 /// information is available for code generation purposes.
-class HiddenTypeLayoutInfoType : public TypeBase {
+class HiddenTypeLayoutInfoType : public TypeBase,
+                                public llvm::FoldingSetNode {
+public:
+  enum SubKind : uint8_t { Nominal, BoundGeneric };
+
+protected:
   friend class ASTContext;
 
   HiddenTypeLayoutInfoDecl *Decl;
   Type Parent;
+  SubKind SK;
 
-  HiddenTypeLayoutInfoType(HiddenTypeLayoutInfoDecl *decl,
-                           Type Parent, const ASTContext &ctx,
+  HiddenTypeLayoutInfoType(SubKind sk, HiddenTypeLayoutInfoDecl *decl,
+                           Type parent, const ASTContext &ctx,
                            RecursiveTypeProperties properties)
       : TypeBase(TypeKind::HiddenTypeLayoutInfo, &ctx, properties),
-        Decl(decl) {}
+        Decl(decl), Parent(parent), SK(sk) {}
 
 public:
   HiddenTypeLayoutInfoDecl *getDecl() const { return Decl; }
   Type getParent() const { return Parent; }
+  SubKind getSubKind() const { return SK; }
 
-  static Type get(HiddenTypeLayoutInfoDecl *decl, Type Parent, const ASTContext &ctx);
+  void Profile(llvm::FoldingSetNodeID &ID) const;
+  static void Profile(llvm::FoldingSetNodeID &ID, SubKind sk,
+                      HiddenTypeLayoutInfoDecl *decl, Type parent,
+                      ArrayRef<Type> genericArgs);
 
   static bool classof(const TypeBase *T) {
     return T->getKind() == TypeKind::HiddenTypeLayoutInfo;
   }
 };
 DEFINE_EMPTY_CAN_TYPE_WRAPPER(HiddenTypeLayoutInfoType, Type)
+
+class HiddenNominalTypeLayoutInfoType final : public HiddenTypeLayoutInfoType {
+  friend class ASTContext;
+
+  HiddenNominalTypeLayoutInfoType(HiddenTypeLayoutInfoDecl *decl,
+                                  Type parent, const ASTContext &ctx,
+                                  RecursiveTypeProperties properties)
+      : HiddenTypeLayoutInfoType(Nominal, decl, parent, ctx, properties) {}
+
+public:
+  static Type get(HiddenTypeLayoutInfoDecl *decl, Type parent,
+                  const ASTContext &ctx);
+
+  static bool classof(const TypeBase *T) {
+    auto *H = dyn_cast<HiddenTypeLayoutInfoType>(T);
+    return H && H->getSubKind() == Nominal;
+  }
+};
+
+class HiddenBoundGenericTypeLayoutInfoType final
+    : public HiddenTypeLayoutInfoType {
+  friend class ASTContext;
+
+  SmallVector<Type, 4> GenericArgs;
+
+  HiddenBoundGenericTypeLayoutInfoType(HiddenTypeLayoutInfoDecl *decl,
+                                       Type parent,
+                                       ArrayRef<Type> genericArgs,
+                                       const ASTContext &ctx,
+                                       RecursiveTypeProperties properties)
+      : HiddenTypeLayoutInfoType(BoundGeneric, decl, parent, ctx, properties),
+        GenericArgs(genericArgs.begin(), genericArgs.end()) {}
+
+public:
+  static Type get(HiddenTypeLayoutInfoDecl *decl, Type parent,
+                  ArrayRef<Type> genericArgs, const ASTContext &ctx);
+
+  ArrayRef<Type> getGenericArgs() const { return GenericArgs; }
+
+  static bool classof(const TypeBase *T) {
+    auto *H = dyn_cast<HiddenTypeLayoutInfoType>(T);
+    return H && H->getSubKind() == BoundGeneric;
+  }
+};
 
 /// BuiltinType - An abstract class for all the builtin types.
 class BuiltinType : public TypeBase {

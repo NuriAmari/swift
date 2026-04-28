@@ -36,6 +36,7 @@
 #include "swift/AST/ForeignErrorConvention.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignature.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/AST/ImportCache.h"
 #include "swift/AST/IndexSubset.h"
 #include "swift/AST/KnownProtocols.h"
@@ -597,6 +598,7 @@ struct ASTContext::Implementation {
     llvm::DenseMap<Type, ExistentialType *> ExistentialTypes;
     llvm::FoldingSet<UnboundGenericType> UnboundGenericTypes;
     llvm::FoldingSet<BoundGenericType> BoundGenericTypes;
+    llvm::FoldingSet<HiddenTypeLayoutInfoType> HiddenTypeLayoutInfoTypes;
     llvm::FoldingSet<BuiltinFixedArrayType> BuiltinFixedArrayTypes;
     llvm::FoldingSet<BuiltinBorrowType> BuiltinBorrowTypes;
     llvm::FoldingSet<ProtocolCompositionType> ProtocolCompositionTypes;
@@ -3802,13 +3804,79 @@ Type ErrorType::get(Type originalType) {
   return entry = new (mem) ErrorType(ctx, originalType);
 }
 
-Type HiddenTypeLayoutInfoType::get(HiddenTypeLayoutInfoDecl *decl,
-                                   Type parent,
-                                   const ASTContext &ctx) {
+void HiddenTypeLayoutInfoType::Profile(llvm::FoldingSetNodeID &ID) const {
+  SmallVector<Type, 4> args;
+  if (auto *bg = dyn_cast<HiddenBoundGenericTypeLayoutInfoType>(this))
+    args.append(bg->getGenericArgs().begin(), bg->getGenericArgs().end());
+  Profile(ID, SK, Decl, Parent, args);
+}
+
+void HiddenTypeLayoutInfoType::Profile(llvm::FoldingSetNodeID &ID,
+                                       SubKind sk,
+                                       HiddenTypeLayoutInfoDecl *decl,
+                                       Type parent,
+                                       ArrayRef<Type> genericArgs) {
+  ID.AddInteger(static_cast<uint8_t>(sk));
+  ID.AddString(decl->getABIInfo()->getMangledTypeName());
+  ID.AddPointer(parent ? parent->getCanonicalType().getPointer() : nullptr);
+  for (auto arg : genericArgs)
+    ID.AddPointer(arg->getCanonicalType().getPointer());
+}
+
+Type HiddenNominalTypeLayoutInfoType::get(HiddenTypeLayoutInfoDecl *decl,
+                                          Type parent,
+                                          const ASTContext &ctx) {
+  if (parent)
+    parent = parent->getCanonicalType();
+
   RecursiveTypeProperties properties;
+  if (parent)
+    properties |= parent->getRecursiveProperties();
   auto arena = getArena(properties);
-  return new (ctx, arena)
-      HiddenTypeLayoutInfoType(decl, parent, ctx, properties);
+
+  llvm::FoldingSetNodeID ID;
+  HiddenTypeLayoutInfoType::Profile(ID, HiddenTypeLayoutInfoType::Nominal,
+                                    decl, parent, {});
+  void *insertPos = nullptr;
+  auto &types = ctx.getImpl().getArena(arena).HiddenTypeLayoutInfoTypes;
+  if (auto *existing = types.FindNodeOrInsertPos(ID, insertPos))
+    return existing;
+  auto *newType = new (ctx, arena)
+      HiddenNominalTypeLayoutInfoType(decl, parent, ctx, properties);
+  types.InsertNode(newType, insertPos);
+  return newType;
+}
+
+Type HiddenBoundGenericTypeLayoutInfoType::get(HiddenTypeLayoutInfoDecl *decl,
+                                               Type parent,
+                                               ArrayRef<Type> genericArgs,
+                                               const ASTContext &ctx) {
+  if (parent)
+    parent = parent->getCanonicalType();
+  SmallVector<Type, 4> canonicalGenericArgs;
+  canonicalGenericArgs.reserve(genericArgs.size());
+  for (auto arg : genericArgs)
+    canonicalGenericArgs.push_back(arg->getCanonicalType());
+
+  RecursiveTypeProperties properties;
+  if (parent)
+    properties |= parent->getRecursiveProperties();
+  for (auto arg : canonicalGenericArgs)
+    properties |= arg->getRecursiveProperties();
+  auto arena = getArena(properties);
+
+  llvm::FoldingSetNodeID ID;
+  HiddenTypeLayoutInfoType::Profile(ID, HiddenTypeLayoutInfoType::BoundGeneric,
+                                    decl, parent, canonicalGenericArgs);
+  void *insertPos = nullptr;
+  auto &types = ctx.getImpl().getArena(arena).HiddenTypeLayoutInfoTypes;
+  if (auto *existing = types.FindNodeOrInsertPos(ID, insertPos))
+    return existing;
+  auto *newType = new (ctx, arena)
+      HiddenBoundGenericTypeLayoutInfoType(decl, parent, canonicalGenericArgs,
+                                           ctx, properties);
+  types.InsertNode(newType, insertPos);
+  return newType;
 }
 
 void ErrorUnionType::Profile(llvm::FoldingSetNodeID &id, ArrayRef<Type> terms) {

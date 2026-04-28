@@ -19,6 +19,11 @@ $sBf16_Bv4_ ---> Builtin.Vec4xFPIEEE16
 $sBpBv4_ ---> Builtin.Vec4xRawPointer
 $s15s8Internal3FooVXHnD ---> hidden type layout for Internal.Foo
 $ss5Int64V15s8Internal3FooVXHpD ---> hidden type layout for Internal.Foo parent: Swift.Int64
+$ss5Int64V_15s8Internal3FooVXHgD ---> hidden type layout for Internal.Foo<Swift.Int64>
+$ss5Int64Vs6UInt64V_15s8Internal3FooVXHbD ---> hidden type layout for Internal.Foo<Swift.UInt64> parent: Swift.Int64
+$s15s8Internal3BarVXHn_0aB4FooVXHgD ---> hidden type layout for Internal.Foo<hidden type layout for Internal.Bar>
+$sSay15s8Internal3BarVXHnGD ---> [hidden type layout for Internal.Bar]
+$s7Visible3BoxVy15s8Internal3BarVXHnGD ---> Visible.Box<hidden type layout for Internal.Bar>
 _TtSa ---> Swift.Array
 _TtSb ---> Swift.Bool
 _TtSc ---> Swift.UnicodeScalar

@@ -1710,10 +1710,24 @@ NodePointer NodePrinter::print(NodePointer Node, unsigned depth,
       Printer << demangledName;
 
     NodePointer parent = nullptr;
+    NodePointer genericArgs = nullptr;
     for (unsigned i = 1, e = Node->getNumChildren(); i != e; ++i) {
       NodePointer child = Node->getChild(i);
       if (child->getKind() == Node::Kind::Type)
         parent = child;
+      else if (child->getKind() == Node::Kind::TypeList)
+        genericArgs = child;
+    }
+
+    if (genericArgs) {
+      Printer << "<";
+      for (unsigned argIndex = 0, argCount = genericArgs->getNumChildren();
+           argIndex != argCount; ++argIndex) {
+        if (argIndex != 0)
+          Printer << ", ";
+        print(genericArgs->getChild(argIndex), depth + 1);
+      }
+      Printer << ">";
     }
 
     if (parent) {

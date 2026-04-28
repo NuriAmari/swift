@@ -34,6 +34,7 @@
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILFunctionBuilder.h"
 #include "swift/SIL/SILModule.h"
+#include "swift/SIL/AbstractionPattern.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/CharUnits.h"
@@ -1871,26 +1872,63 @@ TypeConverter::convertResilientStruct(IsCopyable_t copyable,
 // Hidden Value Type Support
 //===----------------------------------------------------------------------===//
 
+static Lowering::AbstractionPattern getHiddenFieldAbstractionPattern(
+    const HiddenGenericStructTypeIRABIInfo &genericInfo, Type fieldType) {
+  auto genericSig = genericInfo.getGenericSignature();
+  auto canFieldType = fieldType->getCanonicalType();
+  if (genericSig && canFieldType->hasTypeParameter())
+    canFieldType = genericSig.getReducedType(canFieldType);
+
+  if (genericSig || !canFieldType->hasTypeParameter())
+    return Lowering::AbstractionPattern(genericSig, canFieldType);
+
+  return Lowering::AbstractionPattern::getOpaque();
+}
+
 /// A field-info implementation for hidden value types.
-/// Unlike StructFieldInfo, this stores the SILType directly rather than
-/// computing it from a VarDecl, since hidden types don't have VarDecls.
+/// Unlike StructFieldInfo, hidden types don't have VarDecls. For generic hidden
+/// types, recompute the field type from the current aggregate type so generic
+/// arguments match the context where the field is being manipulated.
 class HiddenFieldInfo : public RecordField<HiddenFieldInfo> {
 public:
-  HiddenFieldInfo(SILType silType, const TypeInfo &type)
-    : RecordField(type), StoredSILType(silType) {}
+  HiddenFieldInfo(unsigned index, const TypeInfo &type)
+    : RecordField(type), Index(index) {}
 
-  HiddenFieldInfo(SILType silType, const ElementLayout &layout,
+  HiddenFieldInfo(unsigned index, const ElementLayout &layout,
                   unsigned begin, unsigned end)
-    : RecordField(layout, begin, end), StoredSILType(silType) {}
+    : RecordField(layout, begin, end), Index(index) {}
 
-  SILType StoredSILType;
+  unsigned Index;
 
   StringRef getFieldName() const {
     return StringRef();
   }
 
   SILType getType(IRGenModule &IGM, SILType T) const {
-    return StoredSILType;
+    auto *hiddenType =
+        dyn_cast<HiddenTypeLayoutInfoType>(T.getASTType().getPointer());
+    assert(hiddenType && "expected hidden aggregate type");
+
+    auto *abiInfo = hiddenType->getDecl()->getABIInfo();
+    if (auto *structInfo = dyn_cast<HiddenStructTypeIRABIInfo>(abiInfo)) {
+      auto fieldTypes = structInfo->getFieldTypes();
+      assert(Index < fieldTypes.size() && "invalid hidden field index");
+      return IGM.getLoweredType(fieldTypes[Index]->getCanonicalType());
+    }
+
+    auto *genericInfo = dyn_cast<HiddenGenericStructTypeIRABIInfo>(abiInfo);
+    assert(genericInfo && "expected hidden struct ABI info");
+    auto fieldTypes = genericInfo->getSubstitutedFieldTypes(hiddenType);
+    assert(Index < fieldTypes.size() && "invalid hidden field index");
+    auto origFieldTypes = genericInfo->getFieldTypes();
+    assert(Index < origFieldTypes.size() && "invalid hidden field index");
+    auto origFieldPattern =
+        getHiddenFieldAbstractionPattern(*genericInfo, origFieldTypes[Index]);
+    auto fieldType = fieldTypes[Index];
+    assert(!fieldType->hasTypeParameter() &&
+           "hidden generic aggregate type should already be contextualized");
+
+    return IGM.getLoweredType(origFieldPattern, fieldType->getCanonicalType());
   }
 };
 
@@ -2076,11 +2114,19 @@ namespace {
           (unsigned)StructTypeInfoKind::HiddenNonFixedStructTypeInfo);
     }
 
+    void getCurrentFieldSILTypes(IRGenFunction &IGF, SILType T,
+                                 SmallVectorImpl<SILType> &fieldSILTypes) const {
+      for (auto &field : getFields())
+        fieldSILTypes.push_back(field.getType(IGF.IGM, T));
+    }
+
     HiddenNonFixedOffsets getNonFixedOffsets(IRGenFunction &IGF) const {
       return HiddenNonFixedOffsets(FieldSILTypes, FieldTIs);
     }
     HiddenNonFixedOffsets getNonFixedOffsets(IRGenFunction &IGF, SILType T) const {
-      return HiddenNonFixedOffsets(FieldSILTypes, FieldTIs);
+      SmallVector<SILType, 8> fieldSILTypes;
+      getCurrentFieldSILTypes(IGF, T, fieldSILTypes);
+      return HiddenNonFixedOffsets(fieldSILTypes, FieldTIs);
     }
 
     Address projectFieldAddress(IRGenFunction &IGF, Address addr, SILType T,
@@ -2159,8 +2205,7 @@ const TypeInfo *irgen::createTypeInfoFromHiddenStructTypeABIInfo(
 
         unsigned begin = explosionSize;
         explosionSize += loadableTI->getExplosionSize();
-        fields.push_back(HiddenFieldInfo(fieldSILTypes[i],
-                                        layout.getElements()[i],
+        fields.push_back(HiddenFieldInfo(i, layout.getElements()[i],
                                         begin, explosionSize));
       }
 
@@ -2178,8 +2223,7 @@ const TypeInfo *irgen::createTypeInfoFromHiddenStructTypeABIInfo(
         if (!fieldTIs[i]->isABIAccessible())
           fieldsABIAccessible = FieldsAreNotABIAccessible;
 
-        fields.push_back(HiddenFieldInfo(fieldSILTypes[i],
-                                        layout.getElements()[i],
+        fields.push_back(HiddenFieldInfo(i, layout.getElements()[i],
                                         0, 0));
       }
 
@@ -2197,8 +2241,7 @@ const TypeInfo *irgen::createTypeInfoFromHiddenStructTypeABIInfo(
         if (!fieldTIs[i]->isABIAccessible())
           fieldsABIAccessible = FieldsAreNotABIAccessible;
 
-        fields.push_back(HiddenFieldInfo(fieldSILTypes[i],
-                                        layout.getElements()[i],
+        fields.push_back(HiddenFieldInfo(i, layout.getElements()[i],
                                         0, 0));
       }
 
@@ -2249,6 +2292,94 @@ const TypeInfo *irgen::createResilientTypeInfoFromABIInfo(
   auto abiAccessible = IsABIAccessible_t(abiInfo.IsKnownABIAccessible);
   return new HiddenResilientStructTypeInfo(
       IGM.OpaqueTy, copyable, abiAccessible, abiInfo.getMetadataAccessorName());
+}
+
+const TypeInfo *irgen::createTypeInfoFromGenericABIInfo(
+    IRGenModule &IGM,
+    HiddenTypeLayoutInfoType *hiddenType,
+    const HiddenGenericStructTypeIRABIInfo &abiInfo) {
+  auto substitutedFieldTypes = abiInfo.getSubstitutedFieldTypes(hiddenType);
+
+  for (auto fieldType : substitutedFieldTypes) {
+    assert(!fieldType->hasTypeParameter() && "Type parameters should be eliminated by now!");
+  }
+
+  SmallVector<SILType, 8> fieldSILTypes;
+  SmallVector<const TypeInfo *, 8> fieldTIs;
+  auto origFieldTypes = abiInfo.getFieldTypes();
+  assert(origFieldTypes.size() == substitutedFieldTypes.size() &&
+         "mismatched hidden generic field counts");
+  for (auto pair : llvm::enumerate(substitutedFieldTypes)) {
+    auto fieldType = pair.value();
+    auto origFieldPattern =
+        getHiddenFieldAbstractionPattern(abiInfo, origFieldTypes[pair.index()]);
+    SILType silType = IGM.getLoweredType(
+        origFieldPattern, fieldType->getCanonicalType());
+    fieldSILTypes.push_back(silType);
+    fieldTIs.push_back(&IGM.getTypeInfo(silType));
+  }
+
+
+  IRGenMangler mangler(IGM.Context);
+  auto typeName = mangler.mangleTypeForLLVMTypeName(
+      CanHiddenTypeLayoutInfoType(hiddenType));
+  auto *structTy = llvm::StructType::create(IGM.getLLVMContext(), typeName);
+
+  StructLayout layout(IGM, CanHiddenTypeLayoutInfoType(hiddenType),
+                      LayoutKind::NonHeapObject, LayoutStrategy::Optimal,
+                      fieldTIs, structTy);
+
+  if (layout.isLoadable() && layout.isFixedLayout()) {
+    SmallVector<HiddenFieldInfo, 8> fields;
+    unsigned explosionSize = 0;
+    for (unsigned i = 0, e = fieldTIs.size(); i != e; ++i) {
+      auto *loadableTI = cast<LoadableTypeInfo>(fieldTIs[i]);
+      unsigned begin = explosionSize;
+      explosionSize += loadableTI->getExplosionSize();
+      fields.push_back(HiddenFieldInfo(i, layout.getElements()[i],
+                                       begin, explosionSize));
+    }
+
+    return HiddenLoadableStructTypeInfo::create(
+        fields, FieldsAreABIAccessible, explosionSize,
+        layout.getType(), layout.getSize(),
+        std::move(layout.getSpareBits()), layout.getAlignment(),
+        layout.isTriviallyDestroyable(),
+        layout.isCopyable(),
+        layout.isAlwaysFixedSize(), IsABIAccessible);
+  }
+
+  if (layout.isFixedLayout()) {
+    SmallVector<HiddenFieldInfo, 8> fields;
+    for (unsigned i = 0, e = fieldTIs.size(); i != e; ++i) {
+      fields.push_back(HiddenFieldInfo(i, layout.getElements()[i],
+                                       0, 0));
+    }
+
+    return HiddenFixedStructTypeInfo::create(
+        fields, FieldsAreABIAccessible,
+        layout.getType(), layout.getSize(),
+        std::move(layout.getSpareBits()), layout.getAlignment(),
+        layout.isTriviallyDestroyable(),
+        layout.isBitwiseTakable(),
+        layout.isCopyable(),
+        layout.isAlwaysFixedSize(), IsABIAccessible);
+  }
+
+  // Non-fixed layout: the substituted fields include a resilient type.
+  SmallVector<HiddenFieldInfo, 8> fields;
+  for (unsigned i = 0, e = fieldTIs.size(); i != e; ++i) {
+    fields.push_back(HiddenFieldInfo(i, layout.getElements()[i],
+                                     0, 0));
+  }
+
+  return HiddenNonFixedStructTypeInfo::create(
+      fields, FieldsAreABIAccessible,
+      fieldSILTypes, fieldTIs,
+      layout.getType(), layout.getAlignment(),
+      layout.isTriviallyDestroyable(),
+      layout.isBitwiseTakable(),
+      layout.isCopyable(), IsABIAccessible);
 }
 
 const TypeInfo *TypeConverter::convertStructType(TypeBase *key, CanType type,

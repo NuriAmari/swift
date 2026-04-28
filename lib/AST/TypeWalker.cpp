@@ -36,7 +36,19 @@ class Traversal : public TypeVisitor<Traversal, bool>
   TypeWalker &Walker;
 
   bool visitErrorType(ErrorType *ty) { return false; }
-  bool visitHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *ty) { return false; }
+  bool visitHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *ty) {
+    if (auto parent = ty->getParent())
+      if (doIt(parent))
+        return true;
+
+    if (auto *bound = dyn_cast<HiddenBoundGenericTypeLayoutInfoType>(ty)) {
+      for (auto arg : bound->getGenericArgs())
+        if (doIt(arg))
+          return true;
+    }
+
+    return false;
+  }
   bool visitPlaceholderType(PlaceholderType *ty) { return false; }
   bool visitBuiltinType(BuiltinType *ty) { return false; }
   bool visitIntegerType(IntegerType *ty) { return false; }
@@ -359,4 +371,3 @@ public:
 bool Type::walk(TypeWalker &walker) const {
   return Traversal(walker).doIt(*this);
 }
-

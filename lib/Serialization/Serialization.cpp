@@ -5870,6 +5870,20 @@ public:
   void visitHiddenTypeLayoutInfoType(const HiddenTypeLayoutInfoType *ty) {
     using namespace decls_block;
     auto *hidden = ty->getDecl();
+    if (auto *bound = dyn_cast<HiddenBoundGenericTypeLayoutInfoType>(ty)) {
+      SmallVector<TypeID, 8> genericArgIDs;
+      for (auto arg : bound->getGenericArgs())
+        genericArgIDs.push_back(S.addTypeRef(arg));
+
+      unsigned abbrCode = S.DeclTypeAbbrCodes[BoundGenericTypeLayout::Code];
+      BoundGenericTypeLayout::emitRecord(
+          S.Out, S.ScratchRecord, abbrCode,
+          S.addDeclRef(hidden),
+          S.addTypeRef(bound->getParent()),
+          genericArgIDs);
+      return;
+    }
+
     unsigned abbrCode = S.DeclTypeAbbrCodes[NominalTypeLayout::Code];
     NominalTypeLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
                                   S.addDeclRef(hidden),
@@ -6796,6 +6810,7 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<HiddenStructTypeLayoutDescriptorLayout>();
   registerDeclTypeAbbr<HiddenReferenceTypeLayoutDescriptorLayout>();
   registerDeclTypeAbbr<HiddenResilientStructTypeLayoutDescriptorLayout>();
+  registerDeclTypeAbbr<HiddenGenericStructTypeLayoutDescriptorLayout>();
 
 #define DECL_ATTR(X, NAME, ...) \
   registerDeclTypeAbbr<NAME##DeclAttrLayout>();
@@ -6892,6 +6907,10 @@ void Serializer::writeHiddenLayoutInformationForDecl(const Decl* D) {
                    llvm::dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(
                        abiInfo)) {
       writeHiddenResilientStructTypeLayoutRecord(resilientInfo, parentDecl);
+    } else if (auto *genericInfo =
+                   llvm::dyn_cast<irgen::HiddenGenericStructTypeIRABIInfo>(
+                       abiInfo)) {
+      writeHiddenGenericStructTypeLayoutRecord(genericInfo, parentDecl);
     } else {
       llvm_unreachable("unhandled HiddenTypeIRABIInfo kind");
     }
@@ -6919,6 +6938,10 @@ void Serializer::writeHiddenLayoutInformationForDecl(const Decl* D) {
                  llvm::dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(
                      abiInfo)) {
     writeHiddenResilientStructTypeLayoutRecord(resilientInfo, parentDecl);
+  } else if (auto *genericInfo =
+                 llvm::dyn_cast<irgen::HiddenGenericStructTypeIRABIInfo>(
+                     abiInfo)) {
+    writeHiddenGenericStructTypeLayoutRecord(genericInfo, parentDecl);
   } else {
     llvm_unreachable("unhandled HiddenTypeIRABIInfo kind");
   }
@@ -6993,8 +7016,39 @@ void Serializer::writeHiddenResilientStructTypeLayoutRecord(
       resilientInfo->Copyable,
       resilientInfo->IsKnownABIAccessible,
       resilientInfo->getSILTypeProperties().getRawFlags(),
+      mangledNameID, parentDeclID);
+}
+
+void Serializer::writeHiddenGenericStructTypeLayoutRecord(
+    const irgen::HiddenGenericStructTypeIRABIInfo *genericInfo,
+    const TypeDecl *parentDecl) {
+  using namespace decls_block;
+
+  SmallVector<TypeID, 4> fieldTypeIDs;
+  for (auto fieldType : genericInfo->getFieldTypes()) {
+    fieldTypeIDs.push_back(addTypeRef(fieldType));
+    if (auto *hiddenFieldType = fieldType->getAs<HiddenTypeLayoutInfoType>()) {
+      scheduleHiddenTypeLayoutSerialization(hiddenFieldType->getDecl());
+    } else if (auto *fieldNominal = fieldType->getAnyNominal()) {
+      if (fieldNominal->getModuleContext() != M)
+        scheduleHiddenTypeLayoutSerialization(fieldNominal);
+    }
+  }
+
+  auto mangledNameID =
+      addUniquedString(genericInfo->getMangledTypeName()).second;
+  auto parentDeclID = parentDecl ? addDeclRef(parentDecl) : DeclID();
+  auto genericSigID = addGenericSignatureRef(genericInfo->getGenericSignature());
+
+  unsigned abbrCode =
+      DeclTypeAbbrCodes
+          [HiddenGenericStructTypeLayoutDescriptorLayout::Code];
+  HiddenGenericStructTypeLayoutDescriptorLayout::emitRecord(
+      Out, ScratchRecord, abbrCode,
       mangledNameID,
-      parentDeclID);
+      parentDeclID,
+      genericSigID,
+      fieldTypeIDs);
 }
 
 std::vector<CharOffset> Serializer::writeAllIdentifiers() {

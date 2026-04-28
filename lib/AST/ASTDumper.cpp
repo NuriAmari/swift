@@ -40,6 +40,7 @@
 #include "swift/Basic/SourceLoc.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/StringExtras.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "clang/AST/Type.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/SmallString.h"
@@ -3073,6 +3074,9 @@ namespace {
 
     void visitHiddenTypeLayoutInfoDecl(HiddenTypeLayoutInfoDecl *HTLD, Label label) {
       printCommon(HTLD, "hidden_type_layout_info_decl", label);
+      if (auto *abiInfo = HTLD->getABIInfo())
+        printFieldQuoted(abiInfo->getMangledTypeName(),
+                         Label::always("mangled_name"));
       printFoot();
     }
   };
@@ -6266,7 +6270,14 @@ namespace {
       printFoot();
     }
 
-    TRIVIAL_TYPE_PRINTER(HiddenTypeLayoutInfo, hidden_type_layout_info)
+    void visitHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *T,
+                                       Label label) {
+      printCommon("hidden_type_layout_info_type", label);
+      if (auto *abiInfo = T->getDecl()->getABIInfo())
+        printFieldQuoted(abiInfo->getMangledTypeName(),
+                         Label::always("mangled_name"));
+      printFoot();
+    }
 
     void visitPlaceholderType(PlaceholderType *T, Label label) {
       printCommon("placeholder_type", label);

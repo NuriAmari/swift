@@ -977,6 +977,20 @@ namespace {
     }
   };
 
+  static AbstractionPattern getHiddenFieldAbstractionPattern(
+      const irgen::HiddenGenericStructTypeIRABIInfo &genericInfo,
+      Type fieldType) {
+    auto genericSig = genericInfo.getGenericSignature();
+    auto canFieldType = fieldType->getCanonicalType();
+    if (genericSig && canFieldType->hasTypeParameter())
+      canFieldType = genericSig.getReducedType(canFieldType);
+
+    if (genericSig || !canFieldType->hasTypeParameter())
+      return AbstractionPattern(genericSig, canFieldType);
+
+    return AbstractionPattern::getOpaque();
+  }
+
   class TypeClassifier :
       public TypeClassifierBase<TypeClassifier, SILTypeProperties> {
   public:
@@ -1032,6 +1046,26 @@ namespace {
 
       if (isa<irgen::HiddenReferenceTypeIRABIInfo>(abiInfo)) {
         return getReferenceSILTypeProperties(isSensitive);
+      }
+
+      if (auto *genericInfo =
+              dyn_cast<irgen::HiddenGenericStructTypeIRABIInfo>(abiInfo)) {
+        auto substFieldTypes =
+            genericInfo->getSubstitutedFieldTypes(type.getPointer());
+        auto origFieldTypes = genericInfo->getFieldTypes();
+        SILTypeProperties combinedProps;
+        assert(origFieldTypes.size() == substFieldTypes.size() &&
+               "mismatched hidden generic field counts");
+        for (auto pair : llvm::enumerate(substFieldTypes)) {
+          auto fieldType = pair.value();
+          auto origFieldPattern = getHiddenFieldAbstractionPattern(
+              *genericInfo, origFieldTypes[pair.index()]);
+          auto fieldProps = classifyType(
+              origFieldPattern, fieldType->getCanonicalType(),
+              TC, Expansion);
+          combinedProps.addSubobject(fieldProps);
+        }
+        return mergeIsTypeExpansionSensitive(isSensitive, combinedProps);
       }
 
       return mergeIsTypeExpansionSensitive(isSensitive,
@@ -2784,6 +2818,32 @@ namespace {
       case irgen::HiddenTypeIRABIInfo::Kind::ResilientStruct:
       case irgen::HiddenTypeIRABIInfo::Kind::NonFixedStruct:
         return handleAddressOnly(type, properties);
+      case irgen::HiddenTypeIRABIInfo::Kind::GenericStruct: {
+        auto *genericInfo =
+            cast<irgen::HiddenGenericStructTypeIRABIInfo>(abiInfo);
+        auto substFieldTypes =
+            genericInfo->getSubstitutedFieldTypes(type.getPointer());
+        auto origFieldTypes = genericInfo->getFieldTypes();
+        SILTypeProperties combinedProps;
+        assert(origFieldTypes.size() == substFieldTypes.size() &&
+               "mismatched hidden generic field counts");
+        for (auto pair : llvm::enumerate(substFieldTypes)) {
+          auto fieldType = pair.value();
+          auto origFieldPattern = getHiddenFieldAbstractionPattern(
+              *genericInfo, origFieldTypes[pair.index()]);
+          auto fieldProps = classifyType(
+              origFieldPattern, fieldType->getCanonicalType(),
+              TC, Expansion);
+          combinedProps.addSubobject(fieldProps);
+        }
+        auto genericProperties =
+            mergeIsTypeExpansionSensitive(isSensitive, combinedProps);
+        if (genericProperties.isAddressOnly())
+          return handleAddressOnly(type, genericProperties);
+        if (genericProperties.isTrivial())
+          return handleTrivial(type, genericProperties);
+        return new (TC) MiscNontrivialTypeLowering(type, genericProperties, Expansion);
+      }
       }
     }
 

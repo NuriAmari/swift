@@ -4152,12 +4152,34 @@ public:
     auto backingPropertyIDs = arrayFieldIDs.slice(0, numBackingProperties);
     arrayFieldIDs = arrayFieldIDs.slice(numBackingProperties);
 
-    for (TypeID dependencyID : arrayFieldIDs) {
-      auto dependency = MF.getTypeChecked(dependencyID);
-      if (!dependency) {
-        return llvm::make_error<TypeError>(
-            name, takeErrorInfo(dependency.takeError()),
-            getErrorFlags(), numVTableEntries);
+    if (!MF.getContext().LangOpts.hasFeature(Feature::SafeImplementationOnly)) {
+      // TODO: Consider serializing hidden representations of generic parameter decls
+      //
+      // In https://github.com/swiftlang/swift/commit/1168cacf4ff83828616f29f02afa710358d3865c, and 
+      // later https://github.com/swiftlang/swift/commit/4a6fe941c7acad7235e7bb751ceade6f5d15bb68 
+      // this check was first introduced. For reasons I don't entirely understand,
+      // resolution of the interfaceTypeID below may superficially succeed such that we 
+      // do not drop this field, but may fail to be entirely deserialized later. 
+      //
+      // The below check previously attempt to deserialize the entire canonical interface type
+      // of the var decl, and now just attempts to resolve a set of "dependencies". Included in a
+      // var decl's dependencies are the declared interface type used to define its type. If that
+      // is a generic struct GenericStruct<T> we are in trouble here. We have a hidden representation
+      // of the nominal GenericStruct, but not the generic parameter decl T. That means we fail to resolve
+      // the generic arguments.
+      //
+      // This isn't actually a problem for us, since the interface type of the var decl will be GenericStruct<Int64>
+      // or GenericStruct<U> for some other generic argument we can resolve. If we can't resolve it then we
+      // need to error.
+      //
+      // I don't have an elegant way of avoiding this issue for now, so just skip this check while we collect some feedback.
+      for (TypeID dependencyID : arrayFieldIDs) {
+        auto dependency = MF.getTypeChecked(dependencyID);
+        if (!dependency) {
+          return llvm::make_error<TypeError>(
+              name, takeErrorInfo(dependency.takeError()),
+              getErrorFlags(), numVTableEntries);
+        }
       }
     }
 
@@ -5973,6 +5995,41 @@ ModuleFile::getHiddenTypeLayoutInfoDecl(DeclID DID) {
     return decl;
   }
 
+  case HIDDEN_GENERIC_STRUCT_TYPE: {
+    IdentifierID mangledNameID;
+    DeclID parentDeclID;
+    GenericSignatureID genericSigID;
+    ArrayRef<uint64_t> fieldTypeIDs;
+
+    HiddenGenericStructTypeLayoutDescriptorLayout::readRecord(
+        scratch, mangledNameID, parentDeclID, genericSigID, fieldTypeIDs);
+
+    CanGenericSignature genericSig;
+    if (auto sig = getGenericSignature(genericSigID))
+      genericSig = sig.getCanonicalSignature();
+
+    SmallVector<Type, 4> fieldTypes;
+    for (auto rawID : fieldTypeIDs) {
+      auto fieldType = getType(static_cast<serialization::TypeID>(rawID));
+      fieldTypes.push_back(fieldType);
+    }
+
+    auto *decl = HiddenTypeLayoutInfoDecl::create(ctx, DC);
+    auto *abiInfo = new (ctx) irgen::HiddenGenericStructTypeIRABIInfo(
+        genericSig, fieldTypes);
+    abiInfo->setMangledTypeName(getIdentifier(mangledNameID).str());
+    decl->setABIInfo(abiInfo);
+    if (parentDeclID) {
+      auto parentDecl = getDeclChecked(parentDeclID);
+      if (!parentDecl)
+        return parentDecl.takeError();
+      decl->setParentDecl(cast<TypeDecl>(parentDecl.get()));
+    }
+
+    declOrOffset = decl;
+    return decl;
+  }
+
   default:
     return diagnoseFatal();
   }
@@ -7555,7 +7612,7 @@ Expected<Type> DESERIALIZE_TYPE(NOMINAL_TYPE)(
     return declOrError.takeError();
 
   if (auto *hiddenDecl = dyn_cast<HiddenTypeLayoutInfoDecl>(declOrError.get())) {
-    return HiddenTypeLayoutInfoType::get(hiddenDecl, parentTy.get(), MF.getContext());
+    return HiddenNominalTypeLayoutInfoType::get(hiddenDecl, parentTy.get(), MF.getContext());
   }
 
   // Look through compatibility aliases.
@@ -8117,6 +8174,26 @@ Expected<Type> DESERIALIZE_TYPE(BOUND_GENERIC_TYPE)(
   auto nominalOrError = MF.getDeclChecked(declID);
   if (!nominalOrError)
     return nominalOrError.takeError();
+
+  if (auto *hidden = dyn_cast<HiddenTypeLayoutInfoDecl>(nominalOrError.get())) {
+    Type parent;
+    if (parentID) {
+      auto parentTy = MF.getTypeChecked(parentID);
+      if (!parentTy)
+        return parentTy.takeError();
+      parent = parentTy.get();
+    }
+    SmallVector<Type, 4> genericArgs;
+    for (TypeID ID : rawArgumentIDs) {
+      auto argTy = MF.getTypeChecked(ID);
+      if (!argTy)
+        return argTy.takeError();
+      genericArgs.push_back(argTy.get());
+    }
+    return HiddenBoundGenericTypeLayoutInfoType::get(
+        hidden, parent, genericArgs, MF.getContext());
+  }
+
   auto nominal = cast<NominalTypeDecl>(nominalOrError.get());
 
   // FIXME: Check this?
