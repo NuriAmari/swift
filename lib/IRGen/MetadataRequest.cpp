@@ -2292,6 +2292,40 @@ namespace {
                                            DynamicMetadataRequest request) {
       auto *abiInfo = type->getDecl()->getABIInfo();
 
+      if (isa<irgen::HiddenGenericTypeIRABIInfo>(abiInfo)) {
+        auto accessorName = abiInfo->getMetadataAccessorName();
+
+        auto *hiddenBG =
+            dyn_cast<HiddenBoundGenericTypeLayoutInfoType>(type.getPointer());
+        assert(hiddenBG && "generic ABI info requires bound generic type");
+
+        SmallVector<llvm::Value *, 4> genericArgs;
+        genericArgs.push_back(request.get(IGF));
+        for (auto genericArg : hiddenBG->getGenericArgs()) {
+          auto argMetadata =
+              IGF.emitTypeMetadataRef(genericArg->getCanonicalType());
+          genericArgs.push_back(argMetadata);
+        }
+
+        SmallVector<llvm::Type *, 4> paramTys;
+        paramTys.push_back(IGF.IGM.SizeTy);
+        for (size_t i = 0; i < hiddenBG->getGenericArgs().size(); ++i)
+          paramTys.push_back(IGF.IGM.TypeMetadataPtrTy);
+        auto *genericFnTy = llvm::FunctionType::get(
+            IGF.IGM.TypeMetadataResponseTy, paramTys, false);
+
+        auto *genericAccessor = cast<llvm::Function>(
+            IGF.IGM.Module.getOrInsertFunction(accessorName, genericFnTy)
+                .getCallee());
+        genericAccessor->setCallingConv(IGF.IGM.SwiftCC);
+
+        auto genericCall = IGF.Builder.CreateCall(genericFnTy, genericAccessor, genericArgs);
+        genericCall->setDoesNotThrow();
+        genericCall->setCallingConv(IGF.IGM.SwiftCC);
+
+        return MetadataResponse::handle(IGF, request, genericCall);
+      }
+
       auto accessorName = abiInfo->getMetadataAccessorName();
       auto *fnTy = llvm::FunctionType::get(
           IGF.IGM.TypeMetadataResponseTy,

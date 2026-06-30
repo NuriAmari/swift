@@ -3955,11 +3955,19 @@ NodePointer Demangler::demangleSpecialType() {
     case 'H': {
       char flag = nextChar();
       bool hasParent = false;
+      bool hasGenericArgs = false;
       switch (flag) {
       case 'n':
         break;
       case 'p':
         hasParent = true;
+        break;
+      case 'g':
+        hasGenericArgs = true;
+        break;
+      case 'b':
+        hasParent = true;
+        hasGenericArgs = true;
         break;
       default:
         return nullptr;
@@ -3968,6 +3976,13 @@ NodePointer Demangler::demangleSpecialType() {
       NodePointer baseName = popNode(Node::Kind::Identifier);
       if (!baseName)
         return nullptr;
+
+      NodePointer genericArgs = nullptr;
+      if (hasGenericArgs) {
+        genericArgs = popTypeList();
+        if (!genericArgs)
+          return nullptr;
+      }
 
       NodePointer parent = nullptr;
       if (hasParent) {
@@ -3980,6 +3995,8 @@ NodePointer Demangler::demangleSpecialType() {
       hiddenType->addChild(baseName, *this);
       if (parent)
         hiddenType->addChild(parent, *this);
+      if (genericArgs)
+        hiddenType->addChild(genericArgs, *this);
       return createType(hiddenType);
     }
     case 'z':

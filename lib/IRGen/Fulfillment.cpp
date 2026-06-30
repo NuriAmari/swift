@@ -47,10 +47,18 @@ static bool isLeafTypeMetadata(CanType type) {
   case TypeKind::Error:
     llvm_unreachable("kind is invalid for a canonical type");
 
-#define ARTIFICIAL_TYPE(ID, SUPER) \
-  case TypeKind::ID:
-#define TYPE(ID, SUPER)
-#include "swift/AST/TypeNodes.def"
+  case TypeKind::HiddenTypeLayoutInfo:
+    return false;
+
+  case TypeKind::SILFunction:
+  case TypeKind::SILBlockStorage:
+  case TypeKind::SILBox:
+  case TypeKind::SILMoveOnlyWrapped:
+  case TypeKind::SILPack:
+  case TypeKind::SILToken:
+  case TypeKind::WeakStorage:
+  case TypeKind::UnownedStorage:
+  case TypeKind::UnmanagedStorage:
   case TypeKind::LValue:
   case TypeKind::InOut:
   case TypeKind::DynamicSelf:

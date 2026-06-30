@@ -1964,9 +1964,9 @@ SILType IRGenModule::getLoweredType(AbstractionPattern orig, Type subst) const {
 }
 
 /// Return the SIL-lowering of the given type.
-SILType IRGenModule::getLoweredType(Type subst) const {
-  return getSILTypes().getLoweredType(
-      subst, TypeExpansionContext::maximalResilienceExpansionOnly());
+SILType IRGenModule::getLoweredType(Type subst,
+                                    TypeExpansionContext forExpansion) const {
+  return getSILTypes().getLoweredType(subst, forExpansion);
 }
 
 /// Return the SIL-lowering of the given type.
@@ -2014,8 +2014,9 @@ llvm::Type *IRGenModule::getStorageTypeForLowered(CanType T) {
 /// Get the type information for the given type, which may not have
 /// yet undergone SIL type lowering.  The type can serve as its own
 /// abstraction pattern.
-const TypeInfo &IRGenModule::getTypeInfoForUnlowered(Type subst) {
-  return getTypeInfoForUnlowered(AbstractionPattern(subst), subst);
+const TypeInfo &IRGenModule::getTypeInfoForUnlowered(
+    Type subst, TypeExpansionContext forExpansion) {
+  return getTypeInfo(getLoweredType(subst, forExpansion));
 }
 
 /// Get the type information for the given type, which may not
@@ -2495,6 +2496,11 @@ TypeConverter::convertHiddenTypeLayoutInfoType(HiddenTypeLayoutInfoType *T) {
   if (auto *resilientInfo =
           dyn_cast<irgen::HiddenResilientStructTypeIRABIInfo>(abiInfo)) {
     return createResilientTypeInfoFromABIInfo(IGM, *resilientInfo);
+  }
+
+  if (auto *genericInfo =
+          dyn_cast<irgen::HiddenGenericStructTypeIRABIInfo>(abiInfo)) {
+    return createTypeInfoFromGenericABIInfo(IGM, T, *genericInfo);
   }
 
   llvm_unreachable("unsupported hidden type ABI info kind");

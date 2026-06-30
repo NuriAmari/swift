@@ -56,6 +56,7 @@
 #include "swift/Basic/Defer.h"
 #include "swift/Bridging/ASTGen.h"
 #include "swift/ClangImporter/ClangModule.h"
+#include "swift/IRGen/HiddenTypeIRABIDetails.h"
 #include "swift/Sema/IDETypeChecking.h"
 #include "swift/Serialization/SerializedModuleLoader.h"
 #include "swift/Strings.h"
@@ -2387,7 +2388,27 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
     if (auto *parentDecl = hiddenDecl->getParentDecl())
       parent = parentDecl->getDeclaredInterfaceType();
 
-    Type hiddenType = HiddenTypeLayoutInfoType::get(hiddenDecl, parent, Context);
+    Type hiddenType;
+    if (auto *genericInfo =
+            dyn_cast<irgen::HiddenGenericStructTypeIRABIInfo>(
+                hiddenDecl->getABIInfo())) {
+      SmallVector<Type, 4> genericArgs;
+      auto genericParams = genericInfo->getGenericSignature().getGenericParams();
+      if (!genericParams.empty()) {
+        unsigned localDepth = genericParams.back()->getDepth();
+        for (auto paramTy : genericParams) {
+          if (paramTy->getDepth() == localDepth)
+            genericArgs.push_back(paramTy);
+        }
+      }
+
+      hiddenType = HiddenBoundGenericTypeLayoutInfoType::get(
+          hiddenDecl, parent, genericArgs, Context);
+    } else {
+      hiddenType = HiddenNominalTypeLayoutInfoType::get(
+          hiddenDecl, parent, Context);
+    }
+
     return MetatypeType::get(hiddenType, Context);
   }
 

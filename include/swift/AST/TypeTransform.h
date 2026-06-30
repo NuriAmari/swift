@@ -122,10 +122,37 @@ case TypeKind::Id:
     case TypeKind::Meet:
       return t;
 
-    case TypeKind::HiddenTypeLayoutInfo:
-      // TODO: When HiddenTypeLayoutInfoType carries generic args or a
-      // parent type, we need to transform those components here.
-      return t;
+    case TypeKind::HiddenTypeLayoutInfo: {
+      auto *hidden = cast<HiddenTypeLayoutInfoType>(base);
+      bool anyChanged = false;
+      Type substParent;
+
+      if (auto parent = hidden->getParent()) {
+        substParent = doIt(parent, pos);
+        assert(substParent && "failed to transform hidden type parent");
+        if (substParent.getPointer() != parent.getPointer())
+          anyChanged = true;
+      }
+
+      if (hidden->getSubKind() == HiddenTypeLayoutInfoType::Nominal) {
+        if (!anyChanged) return t;
+        return HiddenNominalTypeLayoutInfoType::get(
+            hidden->getDecl(), substParent, ctx);
+      }
+
+      auto *bg = cast<HiddenBoundGenericTypeLayoutInfoType>(base);
+      SmallVector<Type, 4> substArgs;
+      for (auto arg : bg->getGenericArgs()) {
+        auto substArg = doIt(arg, TypePosition::Invariant);
+        assert(substArg && "failed to transform hidden type generic arg");
+        if (substArg.getPointer() != arg.getPointer())
+          anyChanged = true;
+        substArgs.push_back(substArg);
+      }
+      if (!anyChanged) return t;
+      return HiddenBoundGenericTypeLayoutInfoType::get(
+          bg->getDecl(), substParent, substArgs, ctx);
+    }
 
     // BuiltinGenericType subclasses
     case TypeKind::BuiltinBorrow:

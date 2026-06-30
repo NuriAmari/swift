@@ -1122,7 +1122,9 @@ public:
                      const ProtocolConformance *conformance);
 
   SILType getLoweredType(AbstractionPattern orig, Type subst) const;
-  SILType getLoweredType(Type subst) const;
+  SILType getLoweredType(Type subst,
+      TypeExpansionContext forExpansion =
+          TypeExpansionContext::maximalResilienceExpansionOnly()) const;
   const Lowering::TypeLowering &getTypeLowering(SILType type) const;
   SILTypeProperties getTypeProperties(SILType type) const;
   SILTypeProperties getTypeProperties(SILType type,
@@ -1136,7 +1138,9 @@ public:
                                           CanType subst);
   const TypeInfo &getTypeInfoForUnlowered(AbstractionPattern orig,
                                           Type subst);
-  const TypeInfo &getTypeInfoForUnlowered(Type subst);
+  const TypeInfo &getTypeInfoForUnlowered(Type subst,
+      TypeExpansionContext forExpansion =
+          TypeExpansionContext::maximalResilienceExpansionOnly());
   const TypeInfo &getTypeInfoForLowered(CanType T);
   const TypeInfo &getTypeInfo(SILType T);
   const TypeInfo &getWitnessTablePtrTypeInfo();

@@ -76,6 +76,7 @@ namespace irgen {
 
   class HiddenStructTypeIRABIInfo;
   class HiddenResilientStructTypeIRABIInfo;
+  class HiddenGenericStructTypeIRABIInfo;
 
   const TypeInfo *createTypeInfoFromHiddenStructTypeABIInfo(
       IRGenModule &IGM,
@@ -85,6 +86,11 @@ namespace irgen {
   const TypeInfo *createResilientTypeInfoFromABIInfo(
       IRGenModule &IGM,
       const HiddenResilientStructTypeIRABIInfo &abiInfo);
+
+  const TypeInfo *createTypeInfoFromGenericABIInfo(
+      IRGenModule &IGM,
+      HiddenTypeLayoutInfoType *hiddenType,
+      const HiddenGenericStructTypeIRABIInfo &abiInfo);
 } // end namespace irgen
 } // end namespace swift
 

@@ -3330,6 +3330,7 @@ ManglingError Remangler::mangleHiddenTypeLayoutInfo(Node *node,
     return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
 
   Node *parent = nullptr;
+  Node *genericArgs = nullptr;
   for (unsigned i = 1, e = node->getNumChildren(); i != e; ++i) {
     Node *child = node->getChild(i);
     switch (child->getKind()) {
@@ -3338,6 +3339,11 @@ ManglingError Remangler::mangleHiddenTypeLayoutInfo(Node *node,
         return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
       parent = child;
       break;
+    case Node::Kind::TypeList:
+      if (genericArgs)
+        return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+      genericArgs = child;
+      break;
     default:
       return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
     }
@@ -3345,10 +3351,12 @@ ManglingError Remangler::mangleHiddenTypeLayoutInfo(Node *node,
 
   if (parent)
     RETURN_IF_ERROR(mangle(parent, depth + 1));
+  if (genericArgs)
+    RETURN_IF_ERROR(mangleTypeList(genericArgs, depth + 1));
 
   RETURN_IF_ERROR(mangleIdentifier(node->getChild(0), depth + 1));
 
-  char flag = parent ? ('p') : ('n');
+  char flag = parent ? (genericArgs ? 'b' : 'p') : (genericArgs ? 'g' : 'n');
   Buffer << "XH" << flag;
   return ManglingError::Success;
 }

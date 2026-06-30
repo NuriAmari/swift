@@ -122,7 +122,8 @@ public:
 
   std::optional<IRABIDetailsProvider::SizeAndAlignment>
   getTypeSizeAlignment(const NominalTypeDecl *TD) {
-    auto *TI = &IGM.getTypeInfoForUnlowered(TD->getDeclaredTypeInContext());
+    auto *TI = &IGM.getTypeInfoForUnlowered(TD->getDeclaredTypeInContext(),
+                                             TypeExpansionContext::minimal());
     auto *fixedTI = dyn_cast<FixedTypeInfo>(TI);
     if (!fixedTI)
       return std::nullopt;
@@ -137,8 +138,26 @@ public:
     IRGenMangler mangler(ctx);
 
     if (auto *structDecl = dyn_cast<StructDecl>(TD)) {
+
       assert(structDecl->canBeCopyable() &&
              "move-only hidden structs are not supported yet");
+
+      if (structDecl->isGenericContext()) {
+        auto genericSig =
+            structDecl->getGenericSignatureOfContext().getCanonicalSignature();
+        SmallVector<Type, 8> fieldTypes;
+        for (auto *field : structDecl->getStoredProperties()) {
+          auto fieldType = field->getInterfaceType()->getCanonicalType();
+          if (genericSig)
+            fieldType = genericSig.getReducedType(fieldType);
+          fieldTypes.push_back(fieldType);
+        }
+        auto *abiInfo = new (ctx) irgen::HiddenGenericStructTypeIRABIInfo(
+            genericSig, fieldTypes);
+        abiInfo->setMangledTypeName(
+            mangler.mangleMangledTypeName(TD->getDeclaredType()));
+        return abiInfo;
+      }
     }
 
     auto declaredType = TD->getDeclaredTypeInContext()->getCanonicalType();
@@ -155,7 +174,8 @@ public:
            "unique accessor");
 
 
-    auto *TI = &IGM.getTypeInfoForUnlowered(TD->getDeclaredTypeInContext());
+    auto *TI = &IGM.getTypeInfoForUnlowered(TD->getDeclaredTypeInContext(),
+                                             TypeExpansionContext::minimal());
     auto *abiInfo = TI->getHiddenTypeIRABIInfo(ctx);
     if (!abiInfo)
       return nullptr;

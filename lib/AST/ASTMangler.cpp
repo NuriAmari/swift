@@ -1438,13 +1438,28 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
         appendType(parent, sig, forDecl);
       }
 
+      auto *bound = dyn_cast<HiddenBoundGenericTypeLayoutInfoType>(hidden);
+      bool hasGenericArgs = bound && !bound->getGenericArgs().empty();
+      if (hasGenericArgs) {
+        bool firstArg = true;
+        for (auto arg : bound->getGenericArgs()) {
+          if (arg->hasArchetype())
+            arg = arg->mapTypeOutOfEnvironment();
+          appendType(arg, sig, forDecl);
+          if (firstArg) {
+            appendOperator("_");
+            firstArg = false;
+          }
+        }
+      }
+
       auto mangledName = hidden->getDecl()->getABIInfo()->getMangledTypeName();
       if (mangledName.starts_with("$"))
         mangledName = mangledName.drop_front(1);
       appendIdentifier(mangledName);
 
-      char flag = parent ? ('p')
-                         : ('n');
+      char flag = parent ? (hasGenericArgs ? 'b' : 'p')
+                         : (hasGenericArgs ? 'g' : 'n');
       char op[] = {'X', 'H', flag};
       appendOperator(StringRef(op, sizeof(op)));
       return;
