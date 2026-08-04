@@ -63,6 +63,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Index/USRGeneration.h"
 #include "clang/Serialization/ASTReader.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
@@ -81,6 +82,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <vector>
 
 #define DEBUG_TYPE "Serialization"
@@ -6756,6 +6758,7 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<InheritedProtocolsLayout>();
 
   registerDeclTypeAbbr<DifferentiationParamIndicesLayout>();
+  registerDeclTypeAbbr<HiddenTypeLayoutInfoLayout>();
 
 #define DECL_ATTR(X, NAME, ...) \
   registerDeclTypeAbbr<NAME##DeclAttrLayout>();
@@ -6785,7 +6788,22 @@ void Serializer::writeAllDeclsAndTypes() {
     wroteSomething |=
         writeASTBlockEntitiesIfNeeded(PackConformancesToSerialize);
     wroteSomething |= writeASTBlockEntitiesIfNeeded(SILLayoutsToSerialize);
+    wroteSomething |= writeHiddenTypeLayoutInformationIfNeeded();
   } while (wroteSomething);
+}
+
+bool Serializer::writeHiddenTypeLayoutInformationIfNeeded() {
+  if (HiddenTypeLayoutsToSerialize.empty())
+    return false;
+
+  using namespace decls_block;
+  unsigned abbrCode = DeclTypeAbbrCodes[HiddenTypeLayoutInfoLayout::Code];
+  while (!HiddenTypeLayoutsToSerialize.empty()) {
+    const Decl *decl = HiddenTypeLayoutsToSerialize.pop_back_val();
+    HiddenTypeLayoutInfoLayout::emitRecord(
+        Out, ScratchRecord, abbrCode, addDeclRef(decl));
+  }
+  return true;
 }
 
 std::vector<CharOffset> Serializer::writeAllIdentifiers() {
@@ -7244,6 +7262,143 @@ static void collectInterestingNestedDeclarations(
   }
 }
 
+void Serializer::scheduleHiddenTypeLayoutSerialization(const Decl *D) {
+  // We assume the standard library will always be available,
+  // so no need to serialize hidden representations of types defined within.
+  if (D->isStdlibDecl())
+    return;
+
+  if (auto *nominal = dyn_cast<NominalTypeDecl>(D)) {
+    if (auto *parentNominal =
+            nominal->getDeclContext()->getSelfNominalTypeDecl())
+      scheduleHiddenTypeLayoutSerialization(parentNominal);
+  } else if (auto *hiddenDecl = dyn_cast<HiddenTypeLayoutInfoDecl>(D)) {
+    if (auto *parentTypeDecl = hiddenDecl->ParentDecl)
+      scheduleHiddenTypeLayoutSerialization(parentTypeDecl);
+  }
+
+  HiddenTypeLayoutsToSerialize.insert(D);
+}
+
+void Serializer::scheduleHiddenTypeLayouts(ArrayRef<const FileUnit *> files) {
+  // @_implementationOnly imported types are generally not allowed to
+  // participate in a module's API, but they can implicitly affect its ABI by
+  // defining storage in another type that is part of the module's API.
+  // Serialize hidden representations for types used to define storage on an
+  // ABI-accessible struct or enum.
+
+  // Track the complete canonical type only while it is on the active path.
+  // Different specializations of the same nominal may expose different types.
+  llvm::SmallPtrSet<const TypeBase *, 16> activeTypes;
+
+  auto isInternalBridgingHeaderImportedType =
+      [&](NominalTypeDecl *nominal, DeclContext *useDC) {
+        auto importSource = nominal->getImportAccessFrom(useDC);
+        assert(importSource &&
+               "imported type should have import access information");
+        if (importSource->accessLevel >= swift::AccessLevel::Public)
+          return false;
+
+        auto *importedModule = importSource->module.importedModule;
+        assert(importedModule &&
+               "import access should reference an imported module");
+        return importedModule->isClangBridgingHeaderImportModule();
+      };
+
+  // Process a type that is ABI accessible. If it is hidden from clients,
+  // schedule it to receive a hidden representation. Otherwise, recurse into
+  // non-resilient structs and enums looking for hidden component types.
+  std::function<void(Type, DeclContext *)> processFieldType =
+      [&](Type fieldType, DeclContext *useDC) {
+        if (auto *hiddenType = fieldType->getAs<HiddenType>()) {
+          if (auto *layoutInfo = hiddenType->getLayoutInfoDecl())
+            scheduleHiddenTypeLayoutSerialization(layoutInfo);
+          return;
+        }
+
+        if (auto *tupleType = fieldType->getAs<TupleType>()) {
+          for (auto elt : tupleType->getElements())
+            processFieldType(elt.getType(), useDC);
+          return;
+        }
+
+        NominalTypeDecl *nominal = nullptr;
+        if (auto *bgt = fieldType->getAs<BoundGenericType>())
+          nominal = bgt->getDecl();
+        else
+          nominal = fieldType->getAnyNominal();
+
+        if (!nominal)
+          return;
+
+        ModuleDecl *typeModule = nominal->getModuleContext();
+        if (M->isImportedImplementationOnly(typeModule,
+                                            /*assumeImported=*/false)) {
+          scheduleHiddenTypeLayoutSerialization(nominal);
+          return;
+        }
+        if (nominal->hasClangNode()) {
+          if (isInternalBridgingHeaderImportedType(nominal, useDC))
+            scheduleHiddenTypeLayoutSerialization(nominal);
+          return;
+        }
+
+        // A resilient type's fields do not contribute to its client-visible
+        // layout.
+        if (typeModule != M &&
+            nominal->isResilient(const_cast<ModuleDecl *>(M),
+                                 swift::ResilienceExpansion::Minimal))
+          return;
+
+        auto canonicalType = fieldType->getCanonicalType();
+        if (!activeTypes.insert(canonicalType.getPointer()).second)
+          return;
+        auto removeActiveType = llvm::make_scope_exit(
+            [&] { activeTypes.erase(canonicalType.getPointer()); });
+
+        auto substitutions = fieldType->getContextSubstitutionMap();
+        if (auto *innerStruct = dyn_cast<StructDecl>(nominal)) {
+          for (auto *prop : innerStruct->getStoredProperties()) {
+            auto storedType = prop->getInterfaceType().subst(substitutions);
+            processFieldType(storedType, prop->getDeclContext());
+          }
+        } else if (auto *innerEnum = dyn_cast<EnumDecl>(nominal)) {
+          for (auto *elt : innerEnum->getAllElements()) {
+            if (elt->isIndirect() || innerEnum->isIndirect())
+              continue;
+            if (auto payloadType = elt->getPayloadInterfaceType()) {
+              processFieldType(payloadType.subst(substitutions),
+                               elt->getDeclContext());
+            }
+          }
+        }
+      };
+
+  std::function<void(Decl *)> processABIAccessibleDecls = [&](Decl *decl) {
+    if (auto *nominal = dyn_cast<NominalTypeDecl>(decl)) {
+      auto access = nominal->getFormalAccessScope(
+          /*useDC=*/nullptr, /*treatUsableFromInlineAsPublic=*/true);
+      if ((access.isPublic() || access.isPackage()) &&
+          isa<StructDecl, EnumDecl>(nominal)) {
+        processFieldType(nominal->getDeclaredInterfaceType(), nominal);
+      }
+    }
+
+    if (auto *iterable = dyn_cast<IterableDeclContext>(decl)) {
+      for (auto *member : iterable->getAllMembers())
+        processABIAccessibleDecls(member);
+    }
+  };
+
+  for (auto *nextFile : files) {
+    SmallVector<Decl *, 32> fileDecls;
+    nextFile->getTopLevelDeclsWithAuxiliaryDecls(fileDecls);
+
+    for (auto *D : fileDecls)
+      processABIAccessibleDecls(D);
+  }
+}
+
 void Serializer::writeAST(ModuleOrSourceFile DC) {
   DeclTable topLevelDecls, operatorDecls, operatorMethodDecls;
   DeclTable precedenceGroupDecls;
@@ -7389,6 +7544,12 @@ void Serializer::writeAST(ModuleOrSourceFile DC) {
       opaqueReturnTypeGenerator.insert(MangledName, addDeclRef(OTD));
     }
   }
+
+  auto &langOpts = M->getASTContext().LangOpts;
+  if (langOpts.hasFeature(
+          Feature::SerializeAbstractTypeLayoutForHiddenTypes) &&
+      M->getResilienceStrategy() != ResilienceStrategy::Resilient)
+    scheduleHiddenTypeLayouts(files);
 
   writeAllDeclsAndTypes();
   std::vector<CharOffset> identifierOffsets = writeAllIdentifiers();
